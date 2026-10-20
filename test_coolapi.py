@@ -208,7 +208,12 @@ def test_history_redacts_and_caps():
            "headers": {"Authorization": "Bearer {{tok}}", "X-Api-Key": "literal-secret", "Accept": "a/b"}}
     out = {"status": 200, "reason": "OK", "ms": 5, "size": 3, "body": "x" * 150_000,
            "headers": [["Set-Cookie", "s=1"], ["Set-Cookie", "t=2"], ["Content-Type", "a/b"]]}
+    req["saved"] = {"path": {"id": "7"}, "query": {"q": ["a", "b"]}, "body": "{}",
+                    "headers": {"X-Api-Key": "literal-secret", "Accept": "a/b"}}
     e = history_entry(req, out)
+    assert e["saved"] == {"path": {"id": "7"}, "query": {"q": ["a", "b"]}, "body": "{}",
+                          "headers": {"X-Api-Key": "«redacted»", "Accept": "a/b"}}
+    assert history_entry({k: v for k, v in req.items() if k != "saved"}, out)["saved"] is None
     assert e["req_headers"] == {"Authorization": "Bearer {{tok}}", "X-Api-Key": "«redacted»", "Accept": "a/b"}
     assert [h[1] for h in e["resp_headers"]] == ["«redacted»", "«redacted»", "a/b"]  # repeated headers kept
     assert len(e["resp_body"]) == 100_000 and e["truncated"]

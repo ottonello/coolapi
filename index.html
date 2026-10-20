@@ -218,7 +218,8 @@ async function go() {
   const body = ['GET', 'HEAD'].includes(r.method) ? '' : $('#body').value;
   $('#res').innerHTML = '<div class="u">sending…</div>';
   try {
-    last[cur] = await api('POST', '/api/send', { collection: name, key: cur, env: $('#env').value, method: r.method, url: '{{base_url}}' + path + (qs ? '?' + qs : ''), headers, body });
+    last[cur] = await api('POST', '/api/send', { collection: name, key: cur, env: $('#env').value, method: r.method, url: '{{base_url}}' + path + (qs ? '?' + qs : ''), headers, body,
+      saved: { path: s.path, query: s.query, headers: s.headers, body: $('#body').value } });
     show(last[cur]);
   } catch (e) { showErr(e.message); }
   $('#res').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -437,8 +438,9 @@ async function loadHistory() {
       <small><span class="stl ${sc(e.status)}">${e.status}</span> · ${e.ms} ms · ${new Date(e.ts).toLocaleTimeString()}${e.key ? ' · ' + esc(e.key) : ''}</small></div>`).join('');
 }
 
+let histCur = null;
 async function showHistory(id) {
-  const e = await api('GET', `/api/history/${name}/${id}`);
+  const e = histCur = await api('GET', `/api/history/${name}/${id}`);
   let b = e.resp_body;
   try { b = JSON.stringify(JSON.parse(b), null, 2); } catch {}
   const hdrs = l => esc(l.map(([k, v]) => k + ': ' + v).join('\n')) || '(none)';
@@ -464,6 +466,13 @@ $('#hist').addEventListener('click', async e => {
 $('#ed').addEventListener('click', e => {
   if (e.target.id !== 'hopen') return;
   cur = e.target.dataset.k; lsSet('req:' + name, cur);
+  const sv = histCur && histCur.saved, r = R();
+  if (sv && r) {  // restore what was sent; redacted headers keep their current value
+    const RED = '«redacted»', now = r.saved.headers;
+    r.saved.path = sv.path; r.saved.query = sv.query; r.saved.body = sv.body;
+    r.saved.headers = Object.fromEntries(Object.entries(sv.headers).map(([k, v]) => [k, v === RED ? (now[k] ?? '') : v]));
+    save();
+  }
   renderList(); setTab('req');
 });
 

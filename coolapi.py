@@ -453,6 +453,18 @@ def redact(pairs):
     ]
 
 
+def saved_values(sv):
+    """The request's saved params as sent, so history can restore them."""
+    if not sv:
+        return None
+    return {
+        "path": sv.get("path", {}),
+        "query": sv.get("query", {}),
+        "headers": dict(redact((sv.get("headers") or {}).items())),
+        "body": (sv.get("body") or "")[:BODY_MAX],
+    }
+
+
 def history_entry(p, out):
     """Templated request (no resolved secrets) + response, bodies capped."""
     body, resp = p.get("body") or "", out["body"]
@@ -473,6 +485,7 @@ def history_entry(p, out):
         "resp_headers": redact(out["headers"]),
         "resp_body": resp[:BODY_MAX],
         "truncated": len(body) > BODY_MAX or len(resp) > BODY_MAX,
+        "saved": saved_values(p.get("saved")),
     }
 
 
