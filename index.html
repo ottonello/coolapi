@@ -221,6 +221,7 @@ async function go() {
     last[cur] = await api('POST', '/api/send', { collection: name, key: cur, env: $('#env').value, method: r.method, url: '{{base_url}}' + path + (qs ? '?' + qs : ''), headers, body });
     show(last[cur]);
   } catch (e) { showErr(e.message); }
+  $('#res').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function addRow(sec) {
