@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>coolapi</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { color-scheme: light dark; --bd: #8884; --mut: #888; --ok: #2a9d4b; --warn: #d98e04; --bad: #d64545; --acc: #3b82f6; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 13px/1.4 system-ui, sans-serif; height: 100vh; display: flex; flex-direction: column; }
+  header { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--bd); }
+  header .sp { flex: 1; }
+  #st { color: var(--mut); }
+  main { flex: 1; display: flex; min-height: 0; }
+  aside { width: 300px; border-right: 1px solid var(--bd); display: flex; flex-direction: column; }
+  aside input { margin: 8px; }
+  #list { overflow: auto; flex: 1; }
+  .tag { padding: 6px 12px 2px; color: var(--mut); font-size: 11px; text-transform: uppercase; }
+  .it { padding: 4px 12px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .it:hover { background: #8881; }
+  .it.sel { background: #3b82f622; }
+  .it small { display: block; color: var(--mut); overflow: hidden; text-overflow: ellipsis; }
+  .m { font: 600 10px monospace; display: inline-block; width: 46px; }
+  .GET { color: var(--ok); } .POST { color: var(--warn); } .PUT { color: var(--acc); }
+  .DELETE { color: var(--bad); } .PATCH { color: #a855f7; }
+  #ed { flex: 1; overflow: auto; padding: 12px 16px; }
+  .bar { display: flex; gap: 8px; }
+  .bar #path { flex: 1; font-family: monospace; }
+  input, select, textarea, button { font: inherit; padding: 5px 8px; border: 1px solid var(--bd); border-radius: 5px; background: transparent; color: inherit; }
+  button { cursor: pointer; }
+  button.pri { background: var(--acc); color: #fff; border-color: var(--acc); font-weight: 600; }
+  h4 { margin: 14px 0 4px; color: var(--mut); font-size: 11px; text-transform: uppercase; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 2px 4px 2px 0; }
+  td.k { width: 200px; font-family: monospace; }
+  td input { width: 100%; font-family: monospace; }
+  td:last-child { width: 30px; }
+  textarea { width: 100%; min-height: 140px; font-family: monospace; resize: vertical; }
+  .sum, .u { color: var(--mut); margin: 6px 0; }
+  .res { margin-top: 18px; border-top: 1px solid var(--bd); padding-top: 8px; }
+  .stl { font-weight: 600; } .stl.ok { color: var(--ok); } .stl.warn { color: var(--warn); } .stl.bad { color: var(--bad); }
+  pre { margin: 6px 0; padding: 8px; background: #8881; border-radius: 5px; overflow: auto; max-height: 55vh; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
+  dialog { width: min(640px, 92vw); border: 1px solid var(--bd); border-radius: 8px; }
+  dialog label { display: block; margin: 8px 0 2px; color: var(--mut); }
+  dialog input, dialog textarea { width: 100%; }
+  dialog menu { display: flex; justify-content: flex-end; gap: 8px; padding: 0; margin: 12px 0 0; }
+  .err { color: var(--bad); white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<header>
+  <select id="col"></select>
+  <select id="env"></select>
+  <button id="imp">Import</button>
+  <button id="envb">Env</button>
+  <button id="new">+ Request</button>
+  <span class="sp"></span>
+  <span id="st"></span>
+</header>
+<main>
+  <aside><input id="filter" placeholder="filter"><div id="list"></div></aside>
+  <section id="ed"></section>
+</main>
+
+<dialog id="dimp">
+  <h3>Import OpenAPI / Swagger</h3>
+  <p style="color:var(--mut)">Same name = overwrite the spec part; saved params, bodies and env are kept.</p>
+  <label>Collection name</label><input id="iname">
+  <label>Spec URL</label><input id="iurl">
+  <label>or file</label><input id="ifile" type="file">
+  <label>or paste</label><textarea id="itext" rows="5" style="min-height:0"></textarea>
+  <p class="err" id="ierr"></p>
+  <menu><button id="icancel">Cancel</button><button class="pri" id="igo">Import</button></menu>
+</dialog>
+
+<dialog id="denv">
+  <h3>Env (not committed)</h3>
+  <textarea id="etext" rows="10"></textarea>
+  <label>Defaults for every request: {"headers": {}, "query": {}} — use {{vars}} from the env</label>
+  <textarea id="dtext" rows="5" style="min-height:0"></textarea>
+  <p class="err" id="eerr"></p>
+  <menu><button id="ecancel">Cancel</button><button class="pri" id="ego">Save</button></menu>
+</dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+// encode but keep {{vars}} for the server to substitute
+const enc = s => String(s).split(/(\{\{[^}]+\}\})/).map((x, i) => i % 2 ? x : encodeURIComponent(x)).join('');
+const lsGet = k => { try { return localStorage.getItem(k) } catch { return null } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v) } catch {} };
+
+async function api(method, url, body) {
+  const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.status);
+  return j;
+}
+
+let name = null, col = null, env = null, cur = null;
+const last = {};
+const R = () => col && col.requests[cur];
+
+let timer;
+function save() {
+  $('#st').textContent = '…';
+  clearTimeout(timer);
+  timer = setTimeout(async () => {
+    try { await api('PUT', '/api/collections/' + name, col); $('#st').textContent = 'saved'; }
+    catch (e) { $('#st').textContent = 'save failed: ' + e.message; }
+  }, 400);
+}
+
+async function loadCollections(pick) {
+  const names = await api('GET', '/api/collections');
+  $('#col').innerHTML = names.map(n => `<option>${esc(n)}</option>`).join('');
+  if (!names.length) return openImport();
+  await openCollection(names.includes(pick) ? pick : names.includes(lsGet('col')) ? lsGet('col') : names[0]);
+}
+
+async function openCollection(n) {
+  name = n; $('#col').value = n; lsSet('col', n);
+  col = await api('GET', '/api/collections/' + n);
+  await loadEnv();
+  const keys = Object.keys(col.requests);
+  cur = keys.includes(lsGet('req:' + n)) ? lsGet('req:' + n) : keys[0] || null;
+  renderList(); render();
+}
+
+async function loadEnv() {
+  env = await api('GET', '/api/env/' + name);
+  $('#env').innerHTML = Object.keys(env.envs).map(n => `<option>${esc(n)}</option>`).join('');
+  $('#env').value = env.active;
+}
+
+function renderList() {
+  const f = $('#filter').value.toLowerCase();
+  const groups = {};
+  for (const [k, r] of Object.entries(col.requests)) {
+    if (f && !`${k} ${r.method} ${r.path} ${r.summary}`.toLowerCase().includes(f)) continue;
+    (groups[r.tag || 'other'] ||= []).push([k, r]);
+  }
+  $('#list').innerHTML = Object.entries(groups).map(([t, items]) =>
+    `<div class="tag">${esc(t)}</div>` + items.map(([k, r]) =>
+      `<div class="it ${k === cur ? 'sel' : ''}" data-k="${esc(k)}"><span class="m ${r.method}">${r.method}</span>${esc(r.path)}<small>${esc(r.summary || k)}</small></div>`).join('')).join('');
+}
+
+function kv(r, sec, decl, fixed) {
+  const s = r.saved[sec];
+  const names = fixed ? decl : [...new Set([...decl, ...Object.keys(s)])];
+  const req = new Set(r.params.filter(p => p.required).map(p => p.name));
+  let h = '<table>' + names.map(n => `<tr><td class="k">${esc(n)}${req.has(n) || fixed ? '*' : ''}</td>
+    <td><input data-sec="${sec}" data-n="${esc(n)}" value="${esc(s[n] ?? '')}"></td>
+    <td>${!fixed && !decl.includes(n) ? `<button data-del="${sec}" data-n="${esc(n)}">×</button>` : ''}</td></tr>`).join('');
+  if (!fixed) h += `<tr data-add="${sec}"><td><input class="nk" placeholder="name"></td><td><input class="nv" placeholder="value"></td><td><button data-addbtn="${sec}">+</button></td></tr>`;
+  return h + '</table>';
+}
+
+function render() {
+  const r = R();
+  if (!r) { $('#ed').innerHTML = '<p style="color:var(--mut)">No requests. Import a spec or add one.</p>'; return; }
+  const pnames = [...r.path.matchAll(/\{([^}]+)\}/g)].map(m => m[1]);
+  const decl = t => r.params.filter(p => p.in === t).map(p => p.name);
+  const defs = Object.keys(col.headers || {}).concat(Object.keys(col.query || {}));
+  $('#ed').innerHTML = `
+    <div class="bar">
+      <select id="meth" ${r.custom ? '' : 'disabled'}>${['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].map(m => `<option ${m === r.method ? 'selected' : ''}>${m}</option>`).join('')}</select>
+      <input id="path" value="${esc(r.path)}" ${r.custom ? '' : 'readonly'}>
+      <button class="pri" id="go" title="Ctrl+Enter">Send</button>
+      ${r.custom ? '<button id="del">Delete</button>' : ''}
+    </div>
+    <div class="sum">${esc(r.summary)}${defs.length ? ` · defaults: ${esc(defs.join(', '))}` : ''}</div>
+    ${pnames.length ? `<h4>Path</h4>${kv(r, 'path', pnames, true)}` : ''}
+    <h4>Query</h4>${kv(r, 'query', decl('query'))}
+    <h4>Headers</h4>${kv(r, 'headers', decl('header'))}
+    <h4>Body</h4><textarea id="body" spellcheck="false">${esc(r.saved.body || r.body_default)}</textarea>
+    <div class="res" id="res"></div>`;
+  if (last[cur]) show(last[cur]);
+}
+
+function showErr(msg) { $('#res').innerHTML = `<div class="err">${esc(msg)}</div>`; }
+
+function show(o) {
+  let b = o.body;
+  try { b = JSON.stringify(JSON.parse(b), null, 2); } catch {}
+  const c = o.status < 300 ? 'ok' : o.status < 400 ? 'warn' : 'bad';
+  $('#res').innerHTML = `<div class="stl ${c}">${o.status} ${esc(o.reason)} · ${o.ms} ms · ${o.size} B</div>
+    <div class="u">${esc(o.url)}</div>
+    <details><summary>Headers (${o.headers.length})</summary><pre>${o.headers.map(h => esc(h[0] + ': ' + h[1])).join('\n')}</pre></details>
+    <pre>${esc(b)}</pre>`;
+}
+
+async function go() {
+  const r = R(), s = r.saved;
+  const pnames = [...r.path.matchAll(/\{([^}]+)\}/g)].map(m => m[1]);
+  const miss = pnames.filter(n => !s.path[n]);
+  if (miss.length) return showErr('Missing path param: ' + miss.join(', '));
+  const path = r.path.replace(/\{([^}]+)\}/g, (_, n) => enc(s.path[n]));
+  const q = { ...col.query, ...s.query };
+  const qs = Object.entries(q).filter(([, v]) => v !== '').map(([k, v]) => enc(k) + '=' + enc(v)).join('&');
+  const headers = Object.fromEntries(Object.entries({ ...col.headers, ...s.headers }).filter(([, v]) => v !== ''));
+  const body = ['GET', 'HEAD'].includes(r.method) ? '' : $('#body').value;
+  $('#res').innerHTML = '<div class="u">sending…</div>';
+  try {
+    last[cur] = await api('POST', '/api/send', { collection: name, env: $('#env').value, method: r.method, url: '{{base_url}}' + path + (qs ? '?' + qs : ''), headers, body });
+    show(last[cur]);
+  } catch (e) { showErr(e.message); }
+}
+
+function addRow(sec) {
+  const tr = document.querySelector(`tr[data-add="${sec}"]`);
+  const k = tr.querySelector('.nk').value.trim();
+  if (!k) return;
+  R().saved[sec][k] = tr.querySelector('.nv').value;
+  save(); render();
+}
+
+$('#ed').addEventListener('input', e => {
+  const t = e.target, r = R();
+  if (t.id === 'body') r.saved.body = t.value;
+  else if (t.dataset.sec && t.dataset.n !== undefined) r.saved[t.dataset.sec][t.dataset.n] = t.value;
+  else return;
+  save();
+});
+$('#ed').addEventListener('change', e => {
+  const t = e.target, r = R();
+  if (t.id === 'meth') r.method = t.value;
+  else if (t.id === 'path') r.path = t.value;
+  else return;
+  save(); renderList(); render();
+});
+$('#ed').addEventListener('click', e => {
+  const t = e.target, r = R();
+  if (t.id === 'go') go();
+  else if (t.id === 'del') { delete col.requests[cur]; cur = Object.keys(col.requests)[0] || null; save(); renderList(); render(); }
+  else if (t.dataset.del) { delete r.saved[t.dataset.del][t.dataset.n]; save(); render(); }
+  else if (t.dataset.addbtn) addRow(t.dataset.addbtn);
+});
+$('#ed').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); go(); }
+  else if (e.key === 'Enter' && e.target.classList.contains('nv')) addRow(e.target.closest('tr').dataset.add);
+});
+document.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && R()) go(); });
+
+$('#list').addEventListener('click', e => {
+  const it = e.target.closest('.it');
+  if (!it) return;
+  cur = it.dataset.k; lsSet('req:' + name, cur); renderList(); render();
+});
+$('#filter').addEventListener('input', renderList);
+$('#col').addEventListener('change', e => openCollection(e.target.value));
+$('#env').addEventListener('change', async e => { env.active = e.target.value; await api('PUT', '/api/env/' + name, env); });
+
+$('#new').addEventListener('click', () => {
+  if (!col) return;
+  let i = 1; while (col.requests['custom-' + i]) i++;
+  const k = 'custom-' + i;
+  col.requests[k] = { method: 'GET', path: '/', summary: '', tag: 'custom', params: [], body_default: '', saved: { path: {}, query: {}, headers: {}, body: '' }, custom: true };
+  cur = k; save(); renderList(); render();
+});
+
+// import
+function openImport() {
+  $('#iname').value = name || ''; $('#iurl').value = (col && col.source) || '';
+  $('#itext').value = ''; $('#ifile').value = ''; $('#ierr').textContent = '';
+  $('#dimp').showModal();
+}
+$('#imp').addEventListener('click', openImport);
+$('#icancel').addEventListener('click', () => $('#dimp').close());
+$('#igo').addEventListener('click', async () => {
+  $('#ierr').textContent = '';
+  try {
+    const f = $('#ifile').files[0];
+    const text = $('#itext').value.trim() || (f ? await f.text() : '');
+    const body = { name: $('#iname').value.trim() || undefined };
+    if (text) body.spec_text = text; else body.url = $('#iurl').value.trim() || undefined;
+    const out = await api('POST', '/api/import', body);
+    $('#dimp').close();
+    await loadCollections(out.name);
+    $('#st').textContent = `imported ${Object.keys(out.collection.requests).length} requests`;
+  } catch (e) { $('#ierr').textContent = e.message; }
+});
+
+// env
+$('#envb').addEventListener('click', () => {
+  if (!col) return;
+  $('#etext').value = JSON.stringify(env, null, 2);
+  $('#dtext').value = JSON.stringify({ headers: col.headers || {}, query: col.query || {} }, null, 2);
+  $('#eerr').textContent = '';
+  $('#denv').showModal();
+});
+$('#ecancel').addEventListener('click', () => $('#denv').close());
+$('#ego').addEventListener('click', async () => {
+  try {
+    const e = JSON.parse($('#etext').value), d = JSON.parse($('#dtext').value);
+    if (!e.envs || !e.envs[e.active]) throw new Error('"active" must be a key of "envs"');
+    await api('PUT', '/api/env/' + name, e);
+    col.headers = d.headers || {}; col.query = d.query || {};
+    await api('PUT', '/api/collections/' + name, col);
+    $('#denv').close();
+    await loadEnv(); render();
+  } catch (err) { $('#eerr').textContent = err.message; }
+});
+
+loadCollections().catch(e => { $('#st').textContent = e.message; });
+</script>
+</body>
+</html>
