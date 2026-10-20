@@ -433,6 +433,69 @@ def do_import(p):
     return {"name": name, "collection": col}
 
 
+# --- history ---
+
+BODY_MAX = 100_000
+HIST_MAX_BYTES = 20_000_000
+SENSITIVE = re.compile(r"auth|key|token|secret|cookie|pass", re.I)
+_hist_lock = threading.Lock()
+
+
+def hist_path(name):
+    return DATA / f"{check_name(name)}.history.jsonl"
+
+
+def redact(pairs):
+    # templated values ({{var}}) are safe to keep; literal secrets are not
+    return [
+        [k, "«redacted»" if SENSITIVE.search(k) and "{{" not in v else v]
+        for k, v in pairs
+    ]
+
+
+def history_entry(p, out):
+    """Templated request (no resolved secrets) + response, bodies capped."""
+    body, resp = p.get("body") or "", out["body"]
+    ms = int(time.time() * 1000)
+    return {
+        "id": str(ms),
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "key": p.get("key"),
+        "env": p.get("env"),
+        "method": p["method"],
+        "url": p["url"],
+        "req_headers": dict(redact((p.get("headers") or {}).items())),
+        "req_body": body[:BODY_MAX],
+        "status": out["status"],
+        "reason": out["reason"],
+        "ms": out["ms"],
+        "size": out["size"],
+        "resp_headers": redact(out["headers"]),
+        "resp_body": resp[:BODY_MAX],
+        "truncated": len(body) > BODY_MAX or len(resp) > BODY_MAX,
+    }
+
+
+def add_history(name, entry):
+    path = hist_path(name)
+    with _hist_lock:
+        DATA.mkdir(exist_ok=True)
+        with path.open("a") as f:
+            f.write(json.dumps(entry) + "\n")
+        if (
+            path.stat().st_size > HIST_MAX_BYTES
+        ):  # ponytail: keep newest half, rewrites file
+            lines = path.read_text().splitlines()
+            path.write_text("\n".join(lines[len(lines) // 2 :]) + "\n")
+
+
+def read_history(name):
+    path = hist_path(name)
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line]
+
+
 # --- server ---
 
 
@@ -469,7 +532,28 @@ class Handler(BaseHTTPRequestHandler):
             if self.command == "POST" and path == "/api/import":
                 return self.reply(200, do_import(body))
             if self.command == "POST" and path == "/api/send":
-                return self.reply(200, send(body))
+                out = send(body)
+                try:
+                    add_history(body["collection"], history_entry(body, out))
+                except OSError:
+                    pass  # history is best effort, the response still goes back
+                return self.reply(200, out)
+            h = re.fullmatch(r"/api/history/([\w-]+)(?:/(\d+))?", path)
+            if h:
+                name, hid = h.groups()
+                if self.command == "DELETE" and not hid:
+                    hist_path(name).unlink(missing_ok=True)
+                    return self.reply(200, {"ok": True})
+                items = read_history(name)
+                if hid:
+                    hit = next((e for e in items if e["id"] == hid), None)
+                    if hit is None:
+                        raise FileNotFoundError(hid)
+                    return self.reply(200, hit)
+                light = ("id", "ts", "key", "env", "method", "url", "status", "ms")
+                return self.reply(
+                    200, [{k: e[k] for k in light} for e in reversed(items[-200:])]
+                )
             if self.command == "POST" and path == "/api/token":
                 t = token_for(body["collection"], body.get("env"), force=True)
                 if not t:
@@ -499,7 +583,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:  # surfaced in the UI
             self.reply(400, {"error": f"{type(e).__name__}: {e}"})
 
-    do_GET = do_PUT = do_POST = handle_any
+    do_GET = do_PUT = do_POST = do_DELETE = handle_any
 
 
 if __name__ == "__main__":

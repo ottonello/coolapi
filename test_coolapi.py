@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import coolapi
-from coolapi import do_import, accept_type, base_url, merge, parse_spec, security, send, spec_ops, subst
+from coolapi import add_history, do_import, history_entry, read_history, accept_type, base_url, merge, parse_spec, security, send, spec_ops, subst
 
 OAS3 = {
     "openapi": "3.0.0",
@@ -200,6 +200,22 @@ def test_reimport_sets_accept_from_spec():
     coolapi.write(coolapi.col_path("c"), {"headers": {"accept": "text/csv"}, "requests": {}})
     h = do_import({"name": "c", "spec_text": json.dumps(spec)})["collection"]["headers"]
     assert h == {"Accept": "application/json"}  # spec overrides existing
+
+
+def test_history_redacts_and_caps():
+    coolapi.DATA = Path(tempfile.mkdtemp())
+    req = {"method": "GET", "url": "{{base_url}}/x", "key": "getX", "env": "t", "body": "",
+           "headers": {"Authorization": "Bearer {{tok}}", "X-Api-Key": "literal-secret", "Accept": "a/b"}}
+    out = {"status": 200, "reason": "OK", "ms": 5, "size": 3, "body": "x" * 150_000,
+           "headers": [["Set-Cookie", "s=1"], ["Set-Cookie", "t=2"], ["Content-Type", "a/b"]]}
+    e = history_entry(req, out)
+    assert e["req_headers"] == {"Authorization": "Bearer {{tok}}", "X-Api-Key": "«redacted»", "Accept": "a/b"}
+    assert [h[1] for h in e["resp_headers"]] == ["«redacted»", "«redacted»", "a/b"]  # repeated headers kept
+    assert len(e["resp_body"]) == 100_000 and e["truncated"]
+    add_history("c", e)
+    add_history("c", {**e, "id": "2"})
+    assert [x["id"] for x in read_history("c")] == [e["id"], "2"]
+    assert read_history("nope") == []
 
 
 if __name__ == "__main__":

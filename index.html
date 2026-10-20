@@ -16,7 +16,11 @@
   main { flex: 1; display: flex; min-height: 0; }
   aside { width: 300px; border-right: 1px solid var(--bd); display: flex; flex-direction: column; }
   aside input { margin: 8px; }
-  #list { overflow: auto; flex: 1; }
+  #list, #hist { overflow: auto; flex: 1; }
+  [hidden] { display: none !important; }
+  .tabs { display: flex; border-bottom: 1px solid var(--bd); }
+  .tabs button { flex: 1; border: 0; border-radius: 0; padding: 8px; }
+  .tabs button.on { background: #3b82f622; font-weight: 600; }
   .tag { padding: 6px 12px 2px; color: var(--mut); font-size: 11px; text-transform: uppercase; }
   .it { padding: 4px 12px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .it:hover { background: #8881; }
@@ -66,7 +70,10 @@
   <span id="st"></span>
 </header>
 <main>
-  <aside><input id="filter" placeholder="filter"><div id="list"></div></aside>
+  <aside>
+    <div class="tabs"><button id="t-req" class="on">Requests</button><button id="t-his">History</button></div>
+    <input id="filter" placeholder="filter"><div id="list"></div><div id="hist" hidden></div>
+  </aside>
   <section id="ed"></section>
 </main>
 
@@ -130,7 +137,7 @@ async function openCollection(n) {
   await loadEnv();
   const keys = Object.keys(col.requests);
   cur = keys.includes(lsGet('req:' + n)) ? lsGet('req:' + n) : keys[0] || null;
-  renderList(); render();
+  renderList(); setTab('req');
 }
 
 async function loadEnv() {
@@ -209,7 +216,7 @@ async function go() {
   const body = ['GET', 'HEAD'].includes(r.method) ? '' : $('#body').value;
   $('#res').innerHTML = '<div class="u">sending…</div>';
   try {
-    last[cur] = await api('POST', '/api/send', { collection: name, env: $('#env').value, method: r.method, url: '{{base_url}}' + path + (qs ? '?' + qs : ''), headers, body });
+    last[cur] = await api('POST', '/api/send', { collection: name, key: cur, env: $('#env').value, method: r.method, url: '{{base_url}}' + path + (qs ? '?' + qs : ''), headers, body });
     show(last[cur]);
   } catch (e) { showErr(e.message); }
 }
@@ -404,6 +411,57 @@ $('#ego').addEventListener('click', async () => {
     $('#denv').close();
     await loadEnv(); render();
   } catch (err) { $('#eerr').textContent = err.message; }
+});
+
+// history
+let tab = 'req';
+const sc = s => s < 300 ? 'ok' : s < 400 ? 'warn' : 'bad';
+
+function setTab(t) {
+  tab = t;
+  $('#t-req').classList.toggle('on', t === 'req');
+  $('#t-his').classList.toggle('on', t === 'his');
+  $('#list').hidden = $('#filter').hidden = t !== 'req';
+  $('#hist').hidden = t !== 'his';
+  if (t === 'his') loadHistory().catch(e => { $('#st').textContent = e.message; });
+  else render();
+}
+
+async function loadHistory() {
+  const h = await api('GET', '/api/history/' + name);
+  $('#hist').innerHTML = `<div class="tag">${h.length} sent ${h.length ? '<button id="hclear" style="float:right">Clear</button>' : ''}</div>` +
+    h.map(e => `<div class="it" data-id="${e.id}"><span class="m ${e.method}">${e.method}</span>${esc(e.url.replace('{{base_url}}', ''))}
+      <small><span class="stl ${sc(e.status)}">${e.status}</span> · ${e.ms} ms · ${new Date(e.ts).toLocaleTimeString()}${e.key ? ' · ' + esc(e.key) : ''}</small></div>`).join('');
+}
+
+async function showHistory(id) {
+  const e = await api('GET', `/api/history/${name}/${id}`);
+  let b = e.resp_body;
+  try { b = JSON.stringify(JSON.parse(b), null, 2); } catch {}
+  const hdrs = l => esc(l.map(([k, v]) => k + ': ' + v).join('\n')) || '(none)';
+  $('#ed').innerHTML = `
+    <div class="bar"><b class="m ${e.method}" style="width:auto;align-self:center">${e.method}</b><code style="flex:1;align-self:center">${esc(e.url)}</code>
+      ${e.key && col.requests[e.key] ? `<button id="hopen" data-k="${esc(e.key)}">Open request</button>` : ''}</div>
+    <div class="sum">${new Date(e.ts).toLocaleString()}${e.env ? ' · env ' + esc(e.env) : ''} · values shown as sent, {{vars}} not resolved</div>
+    <h4>Request headers</h4><pre>${hdrs(Object.entries(e.req_headers))}</pre>
+    ${e.req_body ? `<h4>Request body</h4><pre>${esc(e.req_body)}</pre>` : ''}
+    <div class="res"><div class="stl ${sc(e.status)}">${e.status} ${esc(e.reason)} · ${e.ms} ms · ${e.size} B${e.truncated ? ' · body truncated' : ''}</div>
+      <details><summary>Headers (${e.resp_headers.length})</summary><pre>${hdrs(e.resp_headers)}</pre></details><pre>${esc(b)}</pre></div>`;
+}
+
+$('#t-req').addEventListener('click', () => setTab('req'));
+$('#t-his').addEventListener('click', () => setTab('his'));
+$('#hist').addEventListener('click', async e => {
+  const it = e.target.closest('.it');
+  try {
+    if (e.target.id === 'hclear') { await api('DELETE', '/api/history/' + name); await loadHistory(); }
+    else if (it) await showHistory(it.dataset.id);
+  } catch (err) { $('#st').textContent = err.message; }
+});
+$('#ed').addEventListener('click', e => {
+  if (e.target.id !== 'hopen') return;
+  cur = e.target.dataset.k; lsSet('req:' + name, cur);
+  renderList(); setTab('req');
 });
 
 loadCollections().catch(e => { $('#st').textContent = e.message; });
