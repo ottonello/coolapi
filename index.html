@@ -3,13 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>coolapi</title>
-<link rel="icon" href="data:,">
+<title>CoolAPI</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233b82f6'/%3E%3Cpath d='M18 5 9 18h6l-1 9 9-13h-6z' fill='%23fff'/%3E%3C/svg%3E">
 <style>
   :root { color-scheme: light dark; --bd: #8884; --mut: #888; --ok: #2a9d4b; --warn: #d98e04; --bad: #d64545; --acc: #3b82f6; }
   * { box-sizing: border-box; }
   body { margin: 0; font: 13px/1.4 system-ui, sans-serif; height: 100vh; display: flex; flex-direction: column; }
   header { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--bd); }
+  .brand { display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 15px; margin-right: 6px; }
   header .sp { flex: 1; }
   #st { color: var(--mut); }
   main { flex: 1; display: flex; min-height: 0; }
@@ -54,6 +55,7 @@
 </head>
 <body>
 <header>
+  <span class="brand"><svg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='#3b82f6'/><path d='M18 5 9 18h6l-1 9 9-13h-6z' fill='#fff'/></svg>CoolAPI</span>
   <select id="col"></select>
   <select id="env"></select>
   <button id="imp">Import</button>

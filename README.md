@@ -1,4 +1,4 @@
-# coolapi
+# CoolAPI
 
 Small local API client. Import an OpenAPI/Swagger spec, send requests, keep your saved values when you import again.
 
@@ -32,10 +32,10 @@ coolapi.py        server, spec import and merge, send, OAuth2
 index.html        UI (no build step)
 test_coolapi.py   tests
 data/<name>.json      collection: requests, saved values, default headers
-data/<name>.env.json  envs and credentials (gitignored)
+data/<name>.env.json  envs and credentials
 ```
 
-`data/<name>.json` is not gitignored. It holds saved bodies and values, so check it before you commit it.
+`data/` is gitignored: it holds your saved bodies, values and credentials.
 
 ## Not included
 
