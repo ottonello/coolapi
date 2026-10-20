@@ -412,8 +412,9 @@ def do_import(p):
     h, q, env_vars = security(spec)
     headers = old.get("headers", h)
     accept = accept_type(spec)
-    if accept and "accept" not in {k.lower() for k in headers}:
-        headers = {**headers, "Accept": accept}  # add if missing, never overwrite
+    if accept:  # spec wins over any existing Accept
+        headers = {k: v for k, v in headers.items() if k.lower() != "accept"}
+        headers["Accept"] = accept
     col = {
         "source": p.get("url") or old.get("source", ""),
         "headers": headers,
