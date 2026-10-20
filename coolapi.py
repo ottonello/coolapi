@@ -3,18 +3,20 @@
 # dependencies = ["pyyaml"]
 # ///
 """coolapi: local API client. Import OpenAPI/Swagger, keep saved values and creds on re-import."""
+import base64
 import json
 import os
 import re
 import ssl
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlencode, urljoin, urlparse
 
 import yaml
 
@@ -165,6 +167,19 @@ def security(spec):
         d = deref(spec, d)
         var = re.sub(r"\W", "_", name)
         t = d.get("type")
+        cc = (d.get("flows") or {}).get("clientCredentials") or (
+            d if d.get("flow") == "application" else None
+        )
+        if t == "oauth2" and cc and cc.get("tokenUrl"):
+            env["auth"] = {
+                "type": "oauth2_cc",
+                "token_url": cc["tokenUrl"],
+                "client_id": "",
+                "client_secret": "",
+                "scope": " ".join(cc.get("scopes") or {}),
+                "style": "basic",
+            }
+            continue
         if t == "apiKey" and d.get("in") in ("header", "query"):
             (headers if d["in"] == "header" else query)[d["name"]] = "{{%s}}" % var
         elif t in ("http", "basic", "oauth2", "openIdConnect"):
@@ -216,28 +231,17 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def send(p):
-    env = load_env(p["collection"])
-    vars_ = env["envs"].get(p.get("env") or env["active"], {})
-    missing = set()
-    f = lambda s: subst(s, vars_, missing)  # noqa: E731
-    url = f(p["url"])
-    headers = {f(k): f(v) for k, v in (p.get("headers") or {}).items()}
-    body = f(p.get("body") or "")
-    if missing:
-        raise ValueError("Unresolved variables: " + ", ".join(sorted(missing)))
-    if not url.startswith(("http://", "https://")):
-        raise ValueError(f"Bad URL (set base_url in the env): {url}")
+def http(method, url, headers, body, insecure=False):
     low = {k.lower() for k in headers}
     if body and "content-type" not in low:
         headers["Content-Type"] = "application/json"
     if "user-agent" not in low:
         headers["User-Agent"] = "coolapi"
     req = urllib.request.Request(
-        url, body.encode() if body else None, headers, method=p["method"]
+        url, body.encode() if body else None, headers, method=method
     )
     handlers = [NoRedirect]
-    if p.get("insecure"):
+    if insecure:
         handlers.append(
             urllib.request.HTTPSHandler(context=ssl._create_unverified_context())
         )
@@ -259,6 +263,82 @@ def send(p):
         "ms": int((time.time() - t0) * 1000),
         "size": len(raw),
     }
+
+
+# --- oauth2 client_credentials ---
+
+TOKEN_SKEW = 30
+_tokens = {}  # (collection, env, client_id) -> (token, expires_at); memory only
+_token_lock = threading.Lock()  # ponytail: global lock, per-key locks if it matters
+
+
+def env_vars(collection, env_name):
+    env = load_env(collection)
+    name = env_name or env["active"]
+    return name, env["envs"].get(name, {})
+
+
+def token_for(collection, env_name, force=False, insecure=False):
+    """(token, expires_at) from the env's `auth` block, or None when it has none."""
+    name, vars_ = env_vars(collection, env_name)
+    auth = vars_.get("auth")
+    if not auth:
+        return None
+    missing = set()
+    a = {k: subst(str(v), vars_, missing) for k, v in auth.items()}
+    if missing:
+        raise ValueError("Unresolved variables: " + ", ".join(sorted(missing)))
+    key = (collection, name, a.get("client_id", ""))
+    with _token_lock:
+        cached = _tokens.get(key)
+        if cached and not force and time.time() < cached[1] - TOKEN_SKEW:
+            return cached
+        form = {"grant_type": "client_credentials"}
+        if a.get("scope"):
+            form["scope"] = a["scope"]
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        if a.get("style", "basic") == "basic":
+            cred = f"{a.get('client_id', '')}:{a.get('client_secret', '')}".encode()
+            headers["Authorization"] = "Basic " + base64.b64encode(cred).decode()
+        else:
+            form["client_id"] = a.get("client_id", "")
+            form["client_secret"] = a.get("client_secret", "")
+        r = http("POST", a["token_url"], headers, urlencode(form), insecure)
+        try:
+            j = json.loads(r["body"])
+        except ValueError:
+            j = {}
+        if r["status"] >= 400 or "access_token" not in j:
+            raise ValueError(f"token request failed: {r['status']} {r['body'][:200]}")
+        _tokens[key] = (j["access_token"], time.time() + int(j.get("expires_in", 3600)))
+        return _tokens[key]
+
+
+def send(p):
+    name, vars_ = env_vars(p["collection"], p.get("env"))
+    missing = set()
+    f = lambda s: subst(s, vars_, missing)  # noqa: E731
+    url = f(p["url"])
+    headers = {f(k): f(v) for k, v in (p.get("headers") or {}).items()}
+    body = f(p.get("body") or "")
+    if missing:
+        raise ValueError("Unresolved variables: " + ", ".join(sorted(missing)))
+    if not url.startswith(("http://", "https://")):
+        raise ValueError(f"Bad URL (set base_url in the env): {url}")
+    insecure = bool(p.get("insecure"))
+    tok = token_for(p["collection"], p.get("env"), insecure=insecure)
+    for attempt in (0, 1):
+        h = dict(headers)
+        if tok:  # env auth wins over any default Authorization header
+            h = {k: v for k, v in h.items() if k.lower() != "authorization"}
+            h["Authorization"] = "Bearer " + tok[0]
+        out = http(p["method"], url, h, body, insecure)
+        if out["status"] != 401 or not tok or attempt:
+            break
+        tok = token_for(p["collection"], p.get("env"), force=True, insecure=insecure)
+    if tok:
+        out["token_ttl"] = int(tok[1] - time.time())
+    return out
 
 
 # --- storage ---
@@ -368,6 +448,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, do_import(body))
             if self.command == "POST" and path == "/api/send":
                 return self.reply(200, send(body))
+            if self.command == "POST" and path == "/api/token":
+                t = token_for(body["collection"], body.get("env"), force=True)
+                if not t:
+                    raise ValueError('env has no "auth" block')
+                return self.reply(200, {"expires_in": int(t[1] - time.time())})
             m = re.fullmatch(r"/api/(collections|env)(?:/([\w-]+))?", path)
             if not m:
                 return self.reply(404, {"error": "not found"})

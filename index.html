@@ -54,6 +54,7 @@
   <select id="env"></select>
   <button id="imp">Import</button>
   <button id="envb">Env</button>
+  <button id="tok" title="Fetch a new OAuth2 token for this env">Token</button>
   <button id="new">+ Request</button>
   <span class="sp"></span>
   <span id="st"></span>
@@ -185,7 +186,7 @@ function show(o) {
   let b = o.body;
   try { b = JSON.stringify(JSON.parse(b), null, 2); } catch {}
   const c = o.status < 300 ? 'ok' : o.status < 400 ? 'warn' : 'bad';
-  $('#res').innerHTML = `<div class="stl ${c}">${o.status} ${esc(o.reason)} · ${o.ms} ms · ${o.size} B</div>
+  $('#res').innerHTML = `<div class="stl ${c}">${o.status} ${esc(o.reason)} · ${o.ms} ms · ${o.size} B${o.token_ttl ? ` · token ${Math.round(o.token_ttl / 60)} min left` : ''}</div>
     <div class="u">${esc(o.url)}</div>
     <details><summary>Headers (${o.headers.length})</summary><pre>${o.headers.map(h => esc(h[0] + ': ' + h[1])).join('\n')}</pre></details>
     <pre>${esc(b)}</pre>`;
@@ -280,6 +281,13 @@ $('#igo').addEventListener('click', async () => {
     await loadCollections(out.name);
     $('#st').textContent = `imported ${Object.keys(out.collection.requests).length} requests`;
   } catch (e) { $('#ierr').textContent = e.message; }
+});
+
+$('#tok').addEventListener('click', async () => {
+  try {
+    const t = await api('POST', '/api/token', { collection: name, env: $('#env').value });
+    $('#st').textContent = `token ok, ${Math.round(t.expires_in / 60)} min`;
+  } catch (e) { $('#st').textContent = e.message; }
 });
 
 // env

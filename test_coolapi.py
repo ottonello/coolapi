@@ -2,9 +2,16 @@
 # /// script
 # dependencies = ["pyyaml"]
 # ///
+import base64
 import json
+import tempfile
+import threading
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 
-from coolapi import base_url, merge, parse_spec, security, spec_ops, subst
+import coolapi
+from coolapi import base_url, merge, parse_spec, security, send, spec_ops, subst
 
 OAS3 = {
     "openapi": "3.0.0",
@@ -114,6 +121,64 @@ def test_security_and_yaml():
         "tok": "",
     }
     assert parse_spec("openapi: 3.0.0\npaths: {}")["openapi"] == "3.0.0"
+
+
+def test_security_oauth2_cc_seeds_auth():
+    spec = {"openapi": "3.0.0", "components": {"securitySchemes": {"o": {"type": "oauth2", "flows": {
+        "clientCredentials": {"tokenUrl": "https://t/token", "scopes": {"a": "", "b": ""}}}}}}}
+    h, q, env = security(spec)
+    assert h == {} and env["auth"]["token_url"] == "https://t/token" and env["auth"]["scope"] == "a b"
+
+
+def test_oauth2_send_cache_and_retry():
+    state = {"valid": "tok-1", "issued": 0, "forms": [], "basic": []}
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def out(self, code, obj):
+            data = json.dumps(obj).encode()
+            self.send_response(code)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_POST(self):
+            form = urllib.parse.parse_qs(self.rfile.read(int(self.headers["Content-Length"])).decode())
+            state["forms"].append(form)
+            state["basic"].append(self.headers.get("Authorization"))
+            state["issued"] += 1
+            self.out(200, {"access_token": f"tok-{state['issued']}", "expires_in": 3600})
+
+        def do_GET(self):
+            ok = self.headers.get("Authorization") == "Bearer " + state["valid"]
+            self.out(200 if ok else 401, {"ok": ok})
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_port}"
+    coolapi.DATA = Path(tempfile.mkdtemp())
+    auth = {"token_url": base + "/token", "client_id": "{{cid}}", "client_secret": "s3", "scope": "x", "style": "basic"}
+    env = {"active": "t", "envs": {"t": {"cid": "me", "auth": auth}}}
+    coolapi.write(coolapi.env_path("c"), env)
+    req = {"collection": "c", "method": "GET", "url": base + "/api", "headers": {"Authorization": "Bearer stale"}}
+
+    assert send(dict(req))["status"] == 200  # fetched, overrides default header
+    assert state["basic"][0] == "Basic " + base64.b64encode(b"me:s3").decode()
+    assert state["forms"][0]["grant_type"] == ["client_credentials"] and "client_id" not in state["forms"][0]
+    assert send(dict(req))["status"] == 200 and state["issued"] == 1  # cached
+    state["valid"] = "tok-2"
+    r = send(dict(req))  # 401 -> new token -> retry
+    assert r["status"] == 200 and state["issued"] == 2 and r["token_ttl"] > 3000
+
+    auth["style"] = "body"
+    auth["client_id"] = "me2"  # new cache key
+    coolapi.write(coolapi.env_path("c"), env)
+    state["valid"] = "tok-3"
+    assert send(dict(req))["status"] == 200
+    assert state["forms"][-1]["client_id"] == ["me2"] and state["basic"][-1] is None
+    srv.shutdown()
 
 
 if __name__ == "__main__":
