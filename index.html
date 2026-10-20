@@ -36,6 +36,7 @@
   td.k { width: 200px; font-family: monospace; }
   td input { width: 100%; font-family: monospace; }
   td:last-child { width: 30px; }
+  td button + button { margin-left: 4px; }
   textarea { width: 100%; min-height: 140px; font-family: monospace; resize: vertical; }
   .sum, .u { color: var(--mut); margin: 6px 0; }
   .res { margin-top: 18px; border-top: 1px solid var(--bd); padding-top: 8px; }
@@ -152,9 +153,10 @@ function kv(r, sec, decl, fixed) {
   const s = r.saved[sec];
   const names = fixed ? decl : [...new Set([...decl, ...Object.keys(s)])];
   const req = new Set(r.params.filter(p => p.required).map(p => p.name));
-  let h = '<table>' + names.map(n => `<tr><td class="k">${esc(n)}${req.has(n) || fixed ? '*' : ''}</td>
-    <td><input data-sec="${sec}" data-n="${esc(n)}" value="${esc(s[n] ?? '')}"></td>
-    <td>${!fixed && !decl.includes(n) ? `<button data-del="${sec}" data-n="${esc(n)}">×</button>` : ''}</td></tr>`).join('');
+  // query params can repeat: the value is a string, or an array when there are several
+  let h = '<table>' + names.flatMap(n => [].concat(s[n] ?? '').map((v, j, vals) => `<tr><td class="k">${esc(n)}${req.has(n) || fixed ? '*' : ''}</td>
+    <td><input data-sec="${sec}" data-n="${esc(n)}" data-j="${j}" value="${esc(v)}"></td>
+    <td>${sec === 'query' && j === vals.length - 1 ? `<button data-dup="${sec}" data-n="${esc(n)}" title="Add another value for ${esc(n)}">+</button>` : ''}${!fixed && (!decl.includes(n) || vals.length > 1) ? `<button data-del="${sec}" data-n="${esc(n)}" data-j="${j}">×</button>` : ''}</td></tr>`)).join('');
   if (!fixed) h += `<tr data-add="${sec}"><td><input class="nk" placeholder="name"></td><td><input class="nv" placeholder="value"></td><td><button data-addbtn="${sec}">+</button></td></tr>`;
   return h + '</table>';
 }
@@ -200,7 +202,7 @@ async function go() {
   if (miss.length) return showErr('Missing path param: ' + miss.join(', '));
   const path = r.path.replace(/\{([^}]+)\}/g, (_, n) => enc(s.path[n]));
   const q = { ...col.query, ...s.query };
-  const qs = Object.entries(q).filter(([, v]) => v !== '').map(([k, v]) => enc(k) + '=' + enc(v)).join('&');
+  const qs = Object.entries(q).flatMap(([k, v]) => [].concat(v).filter(x => x !== '').map(x => enc(k) + '=' + enc(x))).join('&');
   const headers = Object.fromEntries(Object.entries({ ...col.headers, ...s.headers }).filter(([, v]) => v !== ''));
   const body = ['GET', 'HEAD'].includes(r.method) ? '' : $('#body').value;
   $('#res').innerHTML = '<div class="u">sending…</div>';
@@ -214,15 +216,20 @@ function addRow(sec) {
   const tr = document.querySelector(`tr[data-add="${sec}"]`);
   const k = tr.querySelector('.nk').value.trim();
   if (!k) return;
-  R().saved[sec][k] = tr.querySelector('.nv').value;
+  const o = R().saved[sec], v = tr.querySelector('.nv').value;
+  if (sec === 'query' && k in o) o[k] = [].concat(o[k], v);  // repeated param
+  else o[k] = v;
   save(); render();
 }
 
 $('#ed').addEventListener('input', e => {
   const t = e.target, r = R();
   if (t.id === 'body') r.saved.body = t.value;
-  else if (t.dataset.sec && t.dataset.n !== undefined) r.saved[t.dataset.sec][t.dataset.n] = t.value;
-  else return;
+  else if (t.dataset.sec && t.dataset.n !== undefined) {
+    const o = r.saved[t.dataset.sec];
+    if (Array.isArray(o[t.dataset.n])) o[t.dataset.n][+t.dataset.j] = t.value;
+    else o[t.dataset.n] = t.value;
+  } else return;
   save();
 });
 $('#ed').addEventListener('change', e => {
@@ -236,7 +243,17 @@ $('#ed').addEventListener('click', e => {
   const t = e.target, r = R();
   if (t.id === 'go') go();
   else if (t.id === 'del') { delete col.requests[cur]; cur = Object.keys(col.requests)[0] || null; save(); renderList(); render(); }
-  else if (t.dataset.del) { delete r.saved[t.dataset.del][t.dataset.n]; save(); render(); }
+  else if (t.dataset.dup) {
+    const o = r.saved[t.dataset.dup], vals = [].concat(o[t.dataset.n] ?? '');
+    o[t.dataset.n] = [...vals, ''];
+    save(); render();
+    document.querySelector(`input[data-sec="${t.dataset.dup}"][data-n="${CSS.escape(t.dataset.n)}"][data-j="${vals.length}"]`).focus();
+  } else if (t.dataset.del) {
+    const o = r.saved[t.dataset.del], v = o[t.dataset.n];
+    if (Array.isArray(v) && v.length > 1) { v.splice(+t.dataset.j, 1); if (v.length === 1) o[t.dataset.n] = v[0]; }
+    else delete o[t.dataset.n];
+    save(); render();
+  }
   else if (t.dataset.addbtn) addRow(t.dataset.addbtn);
 });
 $('#ed').addEventListener('keydown', e => {
