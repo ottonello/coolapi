@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import coolapi
-from coolapi import accept_type, base_url, merge, parse_spec, security, send, spec_ops, subst
+from coolapi import do_import, accept_type, base_url, merge, parse_spec, security, send, spec_ops, subst
 
 OAS3 = {
     "openapi": "3.0.0",
@@ -189,6 +189,17 @@ def test_accept_type():
     assert accept_type(spec) is None  # mixed
     assert accept_type({"swagger": "2.0", "produces": ["application/json"], "paths": {}}) == "application/json"
     assert accept_type(OAS3) is None  # nothing declared
+
+
+def test_reimport_adds_missing_accept_keeps_existing():
+    spec = {"openapi": "3.0.0", "paths": {"/a": {"get": {"responses": {"200": {"content": {"application/json": {}}}}}}}}
+    coolapi.DATA = Path(tempfile.mkdtemp())
+    coolapi.write(coolapi.col_path("c"), {"headers": {"X-Key": "{{k}}"}, "requests": {}})
+    h = do_import({"name": "c", "spec_text": json.dumps(spec)})["collection"]["headers"]
+    assert h == {"X-Key": "{{k}}", "Accept": "application/json"}  # added to existing collection
+    coolapi.write(coolapi.col_path("c"), {"headers": {"accept": "text/csv"}, "requests": {}})
+    h = do_import({"name": "c", "spec_text": json.dumps(spec)})["collection"]["headers"]
+    assert h == {"accept": "text/csv"}  # user value wins
 
 
 if __name__ == "__main__":

@@ -410,11 +410,13 @@ def do_import(p):
         .lower()
     )
     h, q, env_vars = security(spec)
-    if accept := accept_type(spec):
-        h["Accept"] = accept
+    headers = old.get("headers", h)
+    accept = accept_type(spec)
+    if accept and "accept" not in {k.lower() for k in headers}:
+        headers = {**headers, "Accept": accept}  # add if missing, never overwrite
     col = {
         "source": p.get("url") or old.get("source", ""),
-        "headers": old.get("headers", h),
+        "headers": headers,
         "query": old.get("query", q),
         "requests": merge(old, spec_ops(spec)),
     }
