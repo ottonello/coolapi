@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import coolapi
-from coolapi import base_url, merge, parse_spec, security, send, spec_ops, subst
+from coolapi import accept_type, base_url, merge, parse_spec, security, send, spec_ops, subst
 
 OAS3 = {
     "openapi": "3.0.0",
@@ -179,6 +179,16 @@ def test_oauth2_send_cache_and_retry():
     assert send(dict(req))["status"] == 200
     assert state["forms"][-1]["client_id"] == ["me2"] and state["basic"][-1] is None
     srv.shutdown()
+
+
+def test_accept_type():
+    ok = {"200": {"content": {"application/json": {}}}, "404": {"content": {"text/plain": {}}}}
+    spec = {"openapi": "3.0.0", "paths": {"/a": {"get": {"responses": ok}}, "/b": {"post": {"responses": ok}}}}
+    assert accept_type(spec) == "application/json"  # only 2xx counts
+    spec["paths"]["/b"]["post"]["responses"]["201"] = {"content": {"application/pdf": {}}}
+    assert accept_type(spec) is None  # mixed
+    assert accept_type({"swagger": "2.0", "produces": ["application/json"], "paths": {}}) == "application/json"
+    assert accept_type(OAS3) is None  # nothing declared
 
 
 if __name__ == "__main__":

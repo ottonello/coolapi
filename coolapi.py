@@ -194,6 +194,23 @@ def security(spec):
     return headers, query, env
 
 
+def accept_type(spec):
+    """The one media type all 2xx responses use, else None."""
+    types = set(spec.get("produces") or [])  # swagger 2
+    for item in (spec.get("paths") or {}).values():
+        item = deref(spec, item)
+        for m in METHODS:
+            op = item.get(m)
+            if not isinstance(op, dict):
+                continue
+            types |= set(op.get("produces") or [])
+            for code, r in (op.get("responses") or {}).items():
+                if str(code).startswith("2"):
+                    types |= set(deref(spec, r).get("content") or {})
+    if len(types) == 1 and "*" not in (t := next(iter(types))):
+        return t
+
+
 def merge(old, ops):
     """New spec ops + saved values from old. Match by key, then by method+path."""
     old_reqs = old.get("requests", {})
@@ -393,6 +410,8 @@ def do_import(p):
         .lower()
     )
     h, q, env_vars = security(spec)
+    if accept := accept_type(spec):
+        h["Accept"] = accept
     col = {
         "source": p.get("url") or old.get("source", ""),
         "headers": old.get("headers", h),
