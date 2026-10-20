@@ -76,10 +76,8 @@
 </dialog>
 
 <dialog id="denv">
-  <h3>Env (not committed)</h3>
-  <textarea id="etext" rows="10"></textarea>
-  <label>Defaults for every request: {"headers": {}, "query": {}} — use {{vars}} from the env</label>
-  <textarea id="dtext" rows="5" style="min-height:0"></textarea>
+  <h3>Settings</h3>
+  <div id="sbody"></div>
   <p class="err" id="eerr"></p>
   <menu><button id="ecancel">Cancel</button><button class="pri" id="ego">Save</button></menu>
 </dialog>
@@ -290,21 +288,96 @@ $('#tok').addEventListener('click', async () => {
   } catch (e) { $('#st').textContent = e.message; }
 });
 
-// env
+// settings
+let D = null;  // draft: {sel, envs: {name: {vars, auth}}, headers, query}
+const isSecret = k => /secret|token|key|pass/i.test(k);
+const ref = id => id === 'vars' ? [D.envs[D.sel], 'vars'] : [D, id];
+const dict = id => { const [h, p] = ref(id); return h[p]; };
+
+function kvRows(id, obj) {
+  return '<table>' + Object.entries(obj).map(([k, v], i) => `<tr>
+    <td><input data-id="${id}" data-i="${i}" data-f="k" value="${esc(k)}" autocomplete="off"></td>
+    <td><input data-id="${id}" data-i="${i}" data-f="v" type="${id === 'vars' && isSecret(k) ? 'password' : 'text'}" value="${esc(v)}" autocomplete="off"></td>
+    <td><button data-rm="${id}" data-i="${i}">×</button></td></tr>`).join('') +
+    `<tr><td colspan="3"><button data-add="${id}">+ add</button></td></tr></table>`;
+}
+
+function authForm(a) {
+  const f = (k, type = 'text') => `<tr><td class="k">${k}</td><td><input data-auth="${k}" type="${type}" value="${esc(a[k] ?? '')}" autocomplete="off"></td></tr>`;
+  return `<table>${f('token_url')}${f('client_id')}${f('client_secret', 'password')}${f('scope')}
+    <tr><td class="k">style</td><td><select data-auth="style">${['basic', 'body'].map(x => `<option ${a.style === x ? 'selected' : ''}>${x}</option>`).join('')}</select></td></tr></table>
+    <div class="sum">Values can use {{vars}} from the env above.</div>`;
+}
+
+function renderSettings() {
+  const e = D.envs[D.sel], names = Object.keys(D.envs);
+  $('#sbody').innerHTML = `
+    <div class="bar"><select id="ssel">${names.map(n => `<option ${n === D.sel ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+      <input id="newenv" placeholder="new env name" style="flex:1"><button id="dup">Duplicate as</button>
+      <button id="delenv" ${names.length < 2 ? 'disabled' : ''}>Delete env</button></div>
+    <h4>Variables — use as {{name}}</h4>${kvRows('vars', e.vars)}
+    <h4><label><input type="checkbox" id="aon" ${e.auth ? 'checked' : ''} style="width:auto"> OAuth2 client credentials</label></h4>
+    ${e.auth ? authForm(e.auth) : ''}
+    <h4>Default headers (all requests)</h4>${kvRows('headers', D.headers)}
+    <h4>Default query (all requests)</h4>${kvRows('query', D.query)}`;
+}
+
 $('#envb').addEventListener('click', () => {
   if (!col) return;
-  $('#etext').value = JSON.stringify(env, null, 2);
-  $('#dtext').value = JSON.stringify({ headers: col.headers || {}, query: col.query || {} }, null, 2);
+  D = {
+    sel: $('#env').value,
+    envs: Object.fromEntries(Object.entries(env.envs).map(([n, v]) => { const { auth, ...vars } = v; return [n, { vars: { ...vars }, auth: auth ? { ...auth } : null }]; })),
+    headers: { ...(col.headers || {}) }, query: { ...(col.query || {}) },
+  };
   $('#eerr').textContent = '';
+  renderSettings();
   $('#denv').showModal();
 });
+
+$('#sbody').addEventListener('input', e => {
+  const t = e.target;
+  if (t.dataset.f === 'v') dict(t.dataset.id)[Object.keys(dict(t.dataset.id))[+t.dataset.i]] = t.value;
+  else if (t.dataset.auth && t.type !== 'select-one') D.envs[D.sel].auth[t.dataset.auth] = t.value;
+});
+
+$('#sbody').addEventListener('change', e => {
+  const t = e.target;
+  if (t.id === 'ssel') { D.sel = t.value; renderSettings(); }
+  else if (t.id === 'aon') { D.envs[D.sel].auth = t.checked ? { token_url: '', client_id: '', client_secret: '', scope: '', style: 'basic' } : null; renderSettings(); }
+  else if (t.dataset.auth) D.envs[D.sel].auth[t.dataset.auth] = t.value;
+  else if (t.dataset.f === 'k') {  // rename key, keep order
+    const o = dict(t.dataset.id), keys = Object.keys(o), i = +t.dataset.i, nk = t.value.trim();
+    if (nk && (nk === keys[i] || !(nk in o))) {
+      const out = {};
+      keys.forEach((k, j) => { out[j === i ? nk : k] = o[k]; });
+      const [h, p] = ref(t.dataset.id); h[p] = out;
+    }
+    renderSettings();
+  }
+});
+
+$('#sbody').addEventListener('click', e => {
+  const t = e.target, d = t.dataset;
+  if (d.rm) { const o = dict(d.rm); delete o[Object.keys(o)[+d.i]]; renderSettings(); }
+  else if (d.add) {
+    const o = dict(d.add); let k = 'new', n = 1;
+    while (k in o) k = 'new' + (++n);
+    o[k] = ''; renderSettings();
+    document.querySelector(`[data-id="${d.add}"][data-i="${Object.keys(o).length - 1}"][data-f="k"]`).select();
+  } else if (t.id === 'dup') {
+    const n = $('#newenv').value.trim();
+    if (!n || n in D.envs) return;
+    D.envs[n] = JSON.parse(JSON.stringify(D.envs[D.sel])); D.sel = n; renderSettings();
+  } else if (t.id === 'delenv') { delete D.envs[D.sel]; D.sel = Object.keys(D.envs)[0]; renderSettings(); }
+});
+
 $('#ecancel').addEventListener('click', () => $('#denv').close());
 $('#ego').addEventListener('click', async () => {
   try {
-    const e = JSON.parse($('#etext').value), d = JSON.parse($('#dtext').value);
-    if (!e.envs || !e.envs[e.active]) throw new Error('"active" must be a key of "envs"');
-    await api('PUT', '/api/env/' + name, e);
-    col.headers = d.headers || {}; col.query = d.query || {};
+    const envs = Object.fromEntries(Object.entries(D.envs).map(([n, e]) => [n, { ...e.vars, ...(e.auth ? { auth: e.auth } : {}) }]));
+    const active = envs[env.active] ? env.active : Object.keys(envs)[0];
+    await api('PUT', '/api/env/' + name, { ...env, active, envs });
+    col.headers = D.headers; col.query = D.query;
     await api('PUT', '/api/collections/' + name, col);
     $('#denv').close();
     await loadEnv(); render();
