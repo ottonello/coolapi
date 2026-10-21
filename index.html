@@ -206,8 +206,10 @@ function show(o) {
     <pre>${esc(b)}</pre>`;
 }
 
+const inflight = new Set();  // one send per request at a time: a POST must not go out twice
 async function go() {
-  const r = R(), s = r.saved;
+  const r = R(), s = r.saved, k = cur;
+  if (inflight.has(k)) return;
   const pnames = [...r.path.matchAll(/\{([^}]+)\}/g)].map(m => m[1]);
   const miss = pnames.filter(n => !s.path[n]);
   if (miss.length) return showErr('Missing path param: ' + miss.join(', '));
@@ -217,11 +219,13 @@ async function go() {
   const headers = Object.fromEntries(Object.entries({ ...col.headers, ...s.headers }).filter(([, v]) => v !== ''));
   const body = ['GET', 'HEAD'].includes(r.method) ? '' : $('#body').value;
   $('#res').innerHTML = '<div class="u">sending…</div>';
+  inflight.add(k);
   try {
     last[cur] = await api('POST', '/api/send', { collection: name, key: cur, env: $('#env').value, method: r.method, url: '{{base_url}}' + path + (qs ? '?' + qs : ''), headers, body,
       saved: { path: s.path, query: s.query, headers: s.headers, body: $('#body').value } });
     show(last[cur]);
   } catch (e) { showErr(e.message); }
+  finally { inflight.delete(k); }
   $('#res').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
@@ -270,10 +274,12 @@ $('#ed').addEventListener('click', e => {
   else if (t.dataset.addbtn) addRow(t.dataset.addbtn);
 });
 $('#ed').addEventListener('keydown', e => {
-  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); go(); }
-  else if (e.key === 'Enter' && e.target.classList.contains('nv')) addRow(e.target.closest('tr').dataset.add);
+  if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey && e.target.classList.contains('nv')) addRow(e.target.closest('tr').dataset.add);
 });
-document.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && R()) go(); });
+// single send shortcut; not while a dialog is open
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && R() && !document.querySelector('dialog[open]')) { e.preventDefault(); go(); }
+});
 
 $('#list').addEventListener('click', e => {
   const it = e.target.closest('.it');
