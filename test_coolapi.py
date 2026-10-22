@@ -202,6 +202,27 @@ def test_reimport_sets_accept_from_spec():
     assert h == {"Accept": "application/json"}  # spec overrides existing
 
 
+def test_create_empty_collection():
+    coolapi.DATA = Path(tempfile.mkdtemp())
+    out = coolapi.do_create({"name": "mine"})
+    assert out["collection"] == {"source": "", "headers": {}, "query": {}, "requests": {}}
+    assert coolapi.load_env("mine")["envs"]["default"] == {"base_url": ""}
+    assert coolapi.env_path("mine").exists()
+    for bad in ({"name": "mine"}, {"name": "a b"}, {}):
+        try:
+            coolapi.do_create(bad)
+            raise AssertionError("expected ValueError")
+        except ValueError:
+            pass
+    col = coolapi.load_col("mine")
+    col["requests"]["r1"] = {"method": "GET", "path": "/x", "summary": "", "tag": "custom", "params": [],
+                             "body_default": "", "saved": {"path": {}, "query": {}, "headers": {}, "body": ""}, "custom": True}
+    coolapi.write(coolapi.col_path("mine"), col)
+    spec = {"openapi": "3.0.0", "paths": {"/a": {"get": {"operationId": "a", "responses": {}}}}}
+    reqs = do_import({"name": "mine", "spec_text": json.dumps(spec)})["collection"]["requests"]
+    assert set(reqs) == {"a", "r1"}  # custom request survives import
+
+
 def test_history_redacts_and_caps():
     coolapi.DATA = Path(tempfile.mkdtemp())
     req = {"method": "GET", "url": "{{base_url}}/x", "key": "getX", "env": "t", "body": "",

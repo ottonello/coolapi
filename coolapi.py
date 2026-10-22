@@ -433,6 +433,17 @@ def do_import(p):
     return {"name": name, "collection": col}
 
 
+def do_create(p):
+    name = check_name((p or {}).get("name"))
+    if col_path(name).exists():
+        raise ValueError(f"collection {name!r} already exists")
+    col = {"source": "", "headers": {}, "query": {}, "requests": {}}
+    write(col_path(name), col)
+    if not env_path(name).exists():
+        write(env_path(name), load_env(name))
+    return {"name": name, "collection": col}
+
+
 # --- history ---
 
 BODY_MAX = 100_000
@@ -544,6 +555,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
             if self.command == "POST" and path == "/api/import":
                 return self.reply(200, do_import(body))
+            if self.command == "POST" and path == "/api/collections":
+                return self.reply(200, do_create(body))
             if self.command == "POST" and path == "/api/send":
                 out = send(body)
                 try:

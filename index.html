@@ -63,6 +63,7 @@
   <span class="brand"><svg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='#3b82f6'/><path d='M18 5 9 18h6l-1 9 9-13h-6z' fill='#fff'/></svg>CoolAPI</span>
   <select id="col"></select>
   <select id="env"></select>
+  <button id="ncol" title="Create an empty collection">+ Collection</button>
   <button id="imp">Import</button>
   <button id="envb">Env</button>
   <button id="tok" title="Fetch a new OAuth2 token for this env">Token</button>
@@ -87,6 +88,13 @@
   <label>or paste</label><textarea id="itext" rows="5" style="min-height:0"></textarea>
   <p class="err" id="ierr"></p>
   <menu><button id="icancel">Cancel</button><button class="pri" id="igo">Import</button></menu>
+</dialog>
+
+<dialog id="dnew">
+  <h3>New collection</h3>
+  <label>Collection name</label><input id="nname">
+  <p class="err" id="nerr"></p>
+  <menu><button id="ncancel">Cancel</button><button class="pri" id="ngo">Create</button></menu>
 </dialog>
 
 <dialog id="denv">
@@ -130,7 +138,12 @@ function save() {
 async function loadCollections(pick) {
   const names = await api('GET', '/api/collections');
   $('#col').innerHTML = names.map(n => `<option>${esc(n)}</option>`).join('');
-  if (!names.length) return openImport();
+  if (!names.length) {
+    name = col = env = cur = null;
+    $('#env').innerHTML = ''; $('#list').innerHTML = '';
+    $('#ed').innerHTML = '<p style="color:var(--mut)">No collections yet.</p><button class="pri" id="e-new">New collection</button> <button id="e-imp">Import spec</button>';
+    return;
+  }
   await openCollection(names.includes(pick) ? pick : names.includes(lsGet('col')) ? lsGet('col') : names[0]);
 }
 
@@ -175,7 +188,7 @@ function kv(r, sec, decl, fixed) {
 
 function render() {
   const r = R();
-  if (!r) { $('#ed').innerHTML = '<p style="color:var(--mut)">No requests. Import a spec or add one.</p>'; return; }
+  if (!r) { $('#ed').innerHTML = '<p style="color:var(--mut)">No requests. Click "+ Request" to add one, or import a spec.</p>'; return; }
   const pnames = [...r.path.matchAll(/\{([^}]+)\}/g)].map(m => m[1]);
   const decl = t => r.params.filter(p => p.in === t).map(p => p.name);
   const defs = Object.keys(col.headers || {}).concat(Object.keys(col.query || {}));
@@ -186,7 +199,8 @@ function render() {
       <button class="pri" id="go" title="Ctrl+Enter">Send</button>
       ${r.custom ? '<button id="del">Delete</button>' : ''}
     </div>
-    <div class="sum">${esc(r.summary)}${defs.length ? ` · defaults: ${esc(defs.join(', '))}` : ''}</div>
+    ${r.custom ? `<div class="bar"><input id="sum" placeholder="name / summary" value="${esc(r.summary)}"><input id="tag" placeholder="group" value="${esc(r.tag)}"></div>` : ''}
+    <div class="sum">${r.custom ? '' : esc(r.summary)}${defs.length ? ` · defaults: ${esc(defs.join(', '))}` : ''}</div>
     ${pnames.length ? `<h4>Path</h4>${kv(r, 'path', pnames, true)}` : ''}
     <h4>Query</h4>${kv(r, 'query', decl('query'))}
     <h4>Headers</h4>${kv(r, 'headers', decl('header'))}
@@ -254,6 +268,8 @@ $('#ed').addEventListener('change', e => {
   const t = e.target, r = R();
   if (t.id === 'meth') r.method = t.value;
   else if (t.id === 'path') r.path = t.value;
+  else if (t.id === 'sum') r.summary = t.value;
+  else if (t.id === 'tag') r.tag = t.value.trim() || 'custom';
   else return;
   save(); renderList(); render();
 });
@@ -297,6 +313,24 @@ $('#new').addEventListener('click', () => {
   const k = 'custom-' + i;
   col.requests[k] = { method: 'GET', path: '/', summary: '', tag: 'custom', params: [], body_default: '', saved: { path: {}, query: {}, headers: {}, body: '' }, custom: true };
   cur = k; save(); renderList(); render();
+});
+
+// new collection
+function openNew() { $('#nname').value = ''; $('#nerr').textContent = ''; $('#dnew').showModal(); $('#nname').focus(); }
+$('#ncol').addEventListener('click', openNew);
+$('#ncancel').addEventListener('click', () => $('#dnew').close());
+$('#ngo').addEventListener('click', async () => {
+  $('#nerr').textContent = '';
+  try {
+    const out = await api('POST', '/api/collections', { name: $('#nname').value.trim() });
+    $('#dnew').close();
+    await loadCollections(out.name);
+  } catch (e) { $('#nerr').textContent = e.message; }
+});
+$('#nname').addEventListener('keydown', e => { if (e.key === 'Enter') $('#ngo').click(); });
+$('#ed').addEventListener('click', e => {
+  if (e.target.id === 'e-new') openNew();
+  else if (e.target.id === 'e-imp') openImport();
 });
 
 // import
