@@ -12,6 +12,36 @@ docker compose up --watch    # in Docker, restarts when coolapi.py changes
 
 Needs `uv`. Dependencies: `pyyaml` and `jq` (inline in the script, `uv` installs them). The server listens on `127.0.0.1` only.
 
+## Tasks
+
+Run with [xc](https://xcfile.dev): `xc dev`, `xc start`, `xc stop`.
+
+### dev
+
+Run in Docker in the foreground. When the code changes, it restarts.
+
+```
+docker compose up --build --watch
+```
+
+### start
+
+Run in Docker in the background. When the code changes, a background watcher restarts it.
+
+```
+docker compose up -d --build
+nohup docker compose watch > /tmp/coolapi-watch.log 2>&1 &
+```
+
+### stop
+
+Stop the container and the watcher.
+
+```
+pkill -f "docker compose [w]atch" || true
+docker compose down
+```
+
 ## Use
 
 - **Import**: spec URL, file or pasted text. JSON and YAML, OpenAPI 3 and Swagger 2.
