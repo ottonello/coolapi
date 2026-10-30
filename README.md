@@ -7,6 +7,7 @@ Small local API client. Import an OpenAPI/Swagger spec, send requests, keep your
 ```
 uv run coolapi.py [port]     # default 8765, opens the browser
 uv run test_coolapi.py       # tests
+docker compose up --watch    # in Docker, restarts when coolapi.py changes
 ```
 
 Needs `uv`. Dependencies: `pyyaml` and `jq` (inline in the script, `uv` installs them). The server listens on `127.0.0.1` only.

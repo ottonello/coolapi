@@ -24,6 +24,7 @@ import yaml
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
 PORT = 8765
+HOST = os.environ.get("COOLAPI_HOST", "127.0.0.1")
 METHODS = ("get", "put", "post", "delete", "patch", "head", "options")
 EMPTY_SAVED = {"path": {}, "query": {}, "headers": {}, "body": ""}
 VAR = re.compile(r"\{\{\s*([\w.-]+)\s*\}\}")
@@ -667,7 +668,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     PORT = int(sys.argv[1]) if len(sys.argv) > 1 else PORT
-    srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"coolapi on http://127.0.0.1:{PORT}")
+    srv = ThreadingHTTPServer((HOST, PORT), Handler)
+    print(f"coolapi on http://{HOST}:{PORT}")
     webbrowser.open(f"http://127.0.0.1:{PORT}")
     srv.serve_forever()

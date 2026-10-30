@@ -1,0 +1,17 @@
+services:
+  coolapi:
+    build: .
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - ./data:/app/data
+    develop:
+      watch:
+        - action: sync+restart
+          path: coolapi.py
+          target: /app/coolapi.py
+        - action: sync
+          path: index.html
+          target: /app/index.html
+        - action: rebuild
+          path: Dockerfile

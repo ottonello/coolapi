@@ -1,0 +1,4 @@
+data/
+.git/
+.serena/
+__pycache__/
