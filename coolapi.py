@@ -260,6 +260,16 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def log_call(method, url, status, t0, size=0):
+    u = urlparse(url)  # no query: it can hold API keys
+    print(
+        f"{method} {u.scheme}://{u.netloc}{u.path} -> {status} "
+        f"{int((time.time() - t0) * 1000)}ms {size}B",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
 def http(method, url, headers, body, insecure=False):
     low = {k.lower() for k in headers}
     if body and "content-type" not in low:
@@ -281,10 +291,13 @@ def http(method, url, headers, body, insecure=False):
     except urllib.error.HTTPError as e:
         r = e
     except urllib.error.URLError as e:
+        log_call(method, url, f"ERR {e.reason}", t0)
         raise ValueError(str(e.reason))
     raw = r.read()
+    status = r.status if hasattr(r, "status") else r.code
+    log_call(method, url, status, t0, len(raw))
     return {
-        "status": r.status if hasattr(r, "status") else r.code,
+        "status": status,
         "reason": r.reason,
         "url": url,
         "headers": list(r.headers.items()),
@@ -413,7 +426,14 @@ def do_import(p):
         if not src:
             raise ValueError("url or spec_text required")
         req = urllib.request.Request(src, headers={"User-Agent": "coolapi"})
-        text = urllib.request.urlopen(req, timeout=30).read().decode()
+        t0 = time.time()
+        try:
+            raw = urllib.request.urlopen(req, timeout=30).read()
+        except Exception as e:
+            log_call("GET", src, f"ERR {getattr(e, 'code', None) or e}", t0)
+            raise
+        log_call("GET", src, 200, t0, len(raw))
+        text = raw.decode()
     spec = parse_spec(text)
     name = check_name(
         name

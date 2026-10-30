@@ -108,6 +108,17 @@ def test_subst():
     assert missing == {"z"}
 
 
+def test_log_call_drops_query():
+    import io, sys, time
+    old, sys.stderr = sys.stderr, io.StringIO()
+    try:
+        coolapi.log_call("GET", "https://h.io/p?key=secret", 200, time.time(), 5)
+        out = sys.stderr.getvalue()
+    finally:
+        sys.stderr = old
+    assert "GET https://h.io/p -> 200" in out and "secret" not in out
+
+
 def test_base_url():
     assert base_url(OAS3, "https://h.io/api/v3/openapi.json") == "https://h.io/api/v3"
     assert (
