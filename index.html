@@ -513,6 +513,7 @@ $('#igo').addEventListener('click', async () => {
     const text = $('#itext').value.trim() || (f ? await f.text() : '');
     const body = { name: $('#iname').value.trim() || undefined };
     if (text) body.spec_text = text; else body.url = $('#iurl').value.trim() || undefined;
+    if (body.url && body.url.startsWith('blob:')) throw new Error("blob: URLs only exist in the browser tab that made them. Save the file there and use 'or file' / 'or paste'.");
     const out = await api('POST', '/api/import', body);
     $('#dimp').close();
     await loadCollections(out.name);
