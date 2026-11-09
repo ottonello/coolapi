@@ -6,7 +6,11 @@
 <title>CoolAPI</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233b82f6'/%3E%3Cpath d='M18 5 9 18h6l-1 9 9-13h-6z' fill='%23fff'/%3E%3C/svg%3E">
 <style>
-  :root { color-scheme: light dark; --bd: #8884; --mut: #888; --ok: #2a9d4b; --warn: #d98e04; --bad: #d64545; --acc: #3b82f6; }
+  :root { color-scheme: light dark; --bd: #8884; --mut: #888; --ok: #2a9d4b; --warn: #d98e04; --bad: #d64545; --acc: #3b82f6; --match: #d98e0455;
+    --j-key: #0b5cad; --j-str: #1a7f37; --j-num: #b35900; --j-bool: #8250df; --j-null: #6e7781; }
+  @media (prefers-color-scheme: dark) {
+    :root { --j-key: #79b8ff; --j-str: #7ee787; --j-num: #ffa657; --j-bool: #d2a8ff; --j-null: #8b949e; }
+  }
   * { box-sizing: border-box; }
   body { margin: 0; font: 13px/1.4 system-ui, sans-serif; height: 100vh; display: flex; flex-direction: column; }
   header { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--bd); }
@@ -27,6 +31,7 @@
   .it:hover { background: #8881; }
   .it.sel { background: #3b82f622; }
   .it small { display: block; color: var(--mut); overflow: hidden; text-overflow: ellipsis; }
+  .it mark { background: var(--match); color: inherit; border-radius: 2px; }
   .m { font: 600 10px monospace; display: inline-block; width: 46px; }
   .GET { color: var(--ok); } .POST { color: var(--warn); } .PUT { color: var(--acc); }
   .DELETE { color: var(--bad); } .PATCH { color: #a855f7; }
@@ -48,6 +53,17 @@
   .res { margin-top: 18px; border-top: 1px solid var(--bd); padding-top: 8px; }
   .stl { font-weight: 600; } .stl.ok { color: var(--ok); } .stl.warn { color: var(--warn); } .stl.bad { color: var(--bad); }
   pre { margin: 6px 0; padding: 8px; background: #8881; border-radius: 5px; overflow: auto; max-height: 55vh; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
+  .jv { padding-left: calc(8px + 1.2em); }
+  .jk { color: var(--j-key); } .js { color: var(--j-str); } .jn { color: var(--j-num); } .jb { color: var(--j-bool); } .jz { color: var(--j-null); }
+  /* arrow and summary are CSS-generated so they are never copied with the text */
+  .jt { display: inline-block; width: 1.2em; margin-left: -1.2em; padding: 0; border: 0; color: var(--mut); line-height: 1; }
+  .jt::before { content: "▾"; }
+  .closed > .jt::before { content: "▸"; }
+  .je { cursor: pointer; color: var(--mut); }
+  .je::after { content: " … " attr(data-n) " "; }
+  .jf.closed > .jc, .jf:not(.closed) > .je { display: none; }
+  #jqf { width: 100%; margin-top: 6px; font-family: monospace; }
+  #jqe { font: 12px monospace; }
   dialog { width: min(640px, 92vw); border: 1px solid var(--bd); border-radius: 8px; }
   #denv { width: min(1000px, 95vw); }
   #denv td:first-child { width: 30%; }
@@ -114,6 +130,64 @@ const enc = s => String(s).split(/(\{\{[^}]+\}\})/).map((x, i) => i % 2 ? x : pc
 const lsGet = k => { try { return localStorage.getItem(k) } catch { return null } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v) } catch {} };
 
+// fuzzy:start
+// per code unit: lowercasing a whole string can change its length ('İ') and shift highlight positions
+const fold = s => s.split('').map(c => c.toLowerCase()[0]);
+const wordStart = (s, i) => i === 0 || /[\/\-_{.\s]/.test(s[i - 1]) || (/[a-z]/.test(s[i - 1]) && /[A-Z]/.test(s[i]));
+
+// characters of q in order, gaps allowed. Tries every start so an exact substring is found as one run.
+function fuzzy(q, text) {
+  const a = fold(q), b = fold(text);
+  let best = null;
+  for (let st = b.indexOf(a[0]); st >= 0; st = b.indexOf(a[0], st + 1)) {
+    const pos = [st];
+    for (let i = 1, j = st + 1; i < a.length; j++) {
+      if (j >= b.length) return best;  // later starts have even less text left
+      if (b[j] === a[i]) { pos.push(j); i++; }
+    }
+    let score = st === 0 ? 2 : 0;
+    pos.forEach((p, i) => {
+      score += 1 + (wordStart(text, p) ? 3 : 0);
+      if (i) score += p === pos[i - 1] + 1 ? 4 : pos[i - 1] + 1 - p;
+    });
+    if (!best || score > best.score) best = { score, pos };
+  }
+  return best;
+}
+
+// every token must match; each one marks its best field. Bonus order breaks ties between fields.
+const FIELDS = [['path', 3], ['summary', 2], ['method', 1], ['key', 0]];
+function matchReq(tokens, k, r) {
+  const text = { path: r.path, summary: r.summary, method: r.method, key: k };
+  const marks = { path: [], summary: [], method: [], key: [] };
+  let score = 0;
+  for (const t of tokens) {
+    let best = null, at = null;
+    for (const [f, bonus] of FIELDS) {
+      const m = fuzzy(t, String(text[f] ?? ''));
+      if (m && (!best || m.score + bonus > best.score)) { best = { score: m.score + bonus, pos: m.pos }; at = f; }
+    }
+    if (!best) return null;
+    score += best.score;
+    marks[at].push(...best.pos);
+  }
+  return { score, marks };
+}
+
+// escape each piece after splitting, so entities like &amp; don't shift positions
+function hl(text, pos = []) {
+  text = String(text ?? '');
+  const on = new Set(pos);
+  let out = '';
+  for (let i = 0, j; i < text.length; i = j) {
+    for (j = i; j < text.length && on.has(j) === on.has(i);) j++;
+    const s = esc(text.slice(i, j));
+    out += on.has(i) ? `<mark>${s}</mark>` : s;
+  }
+  return out;
+}
+// fuzzy:end
+
 async function api(method, url, body) {
   const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
   const j = await r.json();
@@ -163,15 +237,21 @@ async function loadEnv() {
 }
 
 function renderList() {
-  const f = $('#filter').value.toLowerCase();
+  const tokens = $('#filter').value.trim().split(/\s+/).filter(Boolean);
   const groups = {};
   for (const [k, r] of Object.entries(col.requests)) {
-    if (f && !`${k} ${r.method} ${r.path} ${r.summary}`.toLowerCase().includes(f)) continue;
-    (groups[r.tag || 'other'] ||= []).push([k, r]);
+    const m = matchReq(tokens, k, r);
+    if (m) (groups[r.tag || 'other'] ||= []).push([k, r, m]);
   }
-  $('#list').innerHTML = Object.entries(groups).map(([t, items]) =>
-    `<div class="tag">${esc(t)}</div>` + items.map(([k, r]) =>
-      `<div class="it ${k === cur ? 'sel' : ''}" data-k="${esc(k)}"><span class="m ${r.method}">${r.method}</span>${esc(r.path)}<small>${esc(r.summary || k)}</small></div>`).join('')).join('');
+  // sort is stable and every score is 0 with no filter, so spec order is kept then
+  for (const items of Object.values(groups)) items.sort((a, b) => b[2].score - a[2].score);
+  const sorted = Object.entries(groups).sort(([, a], [, b]) => b[0][2].score - a[0][2].score);
+  $('#list').innerHTML = sorted.map(([t, items]) =>
+    `<div class="tag">${esc(t)}</div>` + items.map(([k, r, { marks }]) => {
+      // show the key if that's what matched, so every match has a visible highlight
+      const showKey = !r.summary || (marks.key.length && !marks.summary.length);
+      return `<div class="it ${k === cur ? 'sel' : ''}" data-k="${esc(k)}"><span class="m ${r.method}">${hl(r.method, marks.method)}</span>${hl(r.path, marks.path)}<small>${showKey ? hl(k, marks.key) : hl(r.summary, marks.summary)}</small></div>`;
+    }).join('')).join('');
 }
 
 function kv(r, sec, decl, fixed) {
@@ -187,6 +267,7 @@ function kv(r, sec, decl, fixed) {
 }
 
 function render() {
+  pane = null;
   const r = R();
   if (!r) { $('#ed').innerHTML = '<p style="color:var(--mut)">No requests. Click "+ Request" to add one, or import a spec.</p>'; return; }
   const pnames = [...r.path.matchAll(/\{([^}]+)\}/g)].map(m => m[1]);
@@ -211,14 +292,95 @@ function render() {
 
 function showErr(msg) { $('#res').innerHTML = `<div class="err">${esc(msg)}</div>`; }
 
+// --- response body: text -> [jq filter] -> values -> tree ---
+const TREE_MAX = 2_000_000;  // bigger output stays plain text: millions of spans freeze the tab
+const filters = {};  // jq filter per request, in memory
+let pane = null;  // the view on screen
+
+function newView(text, req) {
+  let base = null;
+  try { base = [JSON.parse(text)]; } catch {}
+  return { text, req, base, filter: (req && filters[req]) || '', values: base, size: text.length, shown: null, error: null, folds: new Set(), seq: 0 };
+}
+
+// Same text as JSON.stringify(v, null, 2), so a copy is valid JSON.
+function jsonView(values, folds) {
+  let n = 0;
+  const scalar = v => {
+    const c = { string: 'js', number: 'jn', boolean: 'jb' }[typeof v] || 'jz';
+    return `<span class="${c}">${esc(JSON.stringify(v))}</span>`;
+  };
+  const node = (v, ind, key) => {
+    const k = key === undefined ? '' : `<span class="jk">${esc(JSON.stringify(key))}</span>: `;
+    if (v === null || typeof v !== 'object') return ind + k + scalar(v);
+    const arr = Array.isArray(v), [o, c] = arr ? '[]' : '{}';
+    const kids = arr ? v.map(x => [x]) : Object.entries(v).map(([a, x]) => [x, a]);
+    if (!kids.length) return ind + k + o + c;
+    const i = n++, shut = folds.has(i), word = arr ? 'item' : 'key';
+    const body = kids.map(([x, a]) => node(x, ind + '  ', a)).join(',\n');
+    return `${ind}<span class="jf${shut ? ' closed' : ''}" data-i="${i}"><button class="jt" aria-label="Fold" aria-expanded="${!shut}"></button>${k}${o}<span class="jc">\n${body}\n${ind}</span><span class="je" data-n="${kids.length} ${word}${kids.length > 1 ? 's' : ''}"></span>${c}</span>`;
+  };
+  return values.map(v => node(v, '')).join('\n');
+}
+
+function outputHtml(v) {
+  if (!v.values) return esc(v.text);
+  if (!v.values.length) return '<span class="jz">(no output)</span>';
+  try {
+    if (v.size <= TREE_MAX) return jsonView(v.values, v.folds);
+    return esc(v.values.map(x => JSON.stringify(x, null, 2)).join('\n'));
+  } catch { return esc(v.text); }  // nesting too deep for the stack
+}
+
+const bodyPane = v => `${v.base ? `<input id="jqf" placeholder="jq filter, e.g. .items[].id" aria-label="jq filter" spellcheck="false" autocomplete="off" value="${esc(v.filter)}"><div class="err" id="jqe">${esc(v.error)}</div>` : ''}
+    <pre class="jv">${outputHtml(v)}</pre>`;
+
+async function applyFilter(v) {
+  const seq = ++v.seq, f = v.filter.trim();
+  let r = { out: null, error: null };
+  if (f) {
+    try { r = await api('POST', '/api/jq', { text: v.text, filter: v.filter }); }
+    catch (e) { r = { out: [], error: e.message }; }
+    if (seq !== v.seq) return;  // a newer filter is on its way
+  }
+  v.error = r.error;
+  // an error with no output keeps the last good output on screen
+  if (!r.error || !r.out || r.out.length) {
+    const shown = r.out && r.out.join('\n');
+    if (shown !== v.shown) {  // same output keeps its folds
+      v.shown = shown; v.folds = new Set();
+      v.values = r.out ? r.out.map(x => JSON.parse(x)) : v.base;
+      v.size = r.out ? shown.length : v.text.length;
+      if (v === pane && $('pre.jv')) $('pre.jv').innerHTML = outputHtml(v);
+    }
+  }
+  if (v === pane && $('#jqe')) $('#jqe').textContent = v.error || '';
+}
+
+let jqTimer;
+$('#ed').addEventListener('input', e => {
+  if (e.target.id !== 'jqf') return;
+  const v = pane;
+  v.filter = e.target.value;
+  if (v.req) filters[v.req] = v.filter;
+  clearTimeout(jqTimer);
+  jqTimer = setTimeout(() => applyFilter(v), 300);
+});
+$('#ed').addEventListener('click', e => {
+  const t = e.target.closest('.jt, .je');
+  if (!t) return;
+  const f = t.parentElement, i = +f.dataset.i, shut = f.classList.toggle('closed');
+  f.querySelector(':scope > .jt').setAttribute('aria-expanded', !shut);
+  if (shut) pane.folds.add(i); else pane.folds.delete(i);
+});
+
 function show(o) {
-  let b = o.body;
-  try { b = JSON.stringify(JSON.parse(b), null, 2); } catch {}
+  pane = o.view;
   const c = o.status < 300 ? 'ok' : o.status < 400 ? 'warn' : 'bad';
   $('#res').innerHTML = `<div class="stl ${c}">${o.status} ${esc(o.reason)} · ${o.ms} ms · ${o.size} B${o.token_ttl ? ` · token ${Math.round(o.token_ttl / 60)} min left` : ''}</div>
     <div class="u">${esc(o.url)}</div>
     <details><summary>Headers (${o.headers.length})</summary><pre>${o.headers.map(h => esc(h[0] + ': ' + h[1])).join('\n')}</pre></details>
-    <pre>${esc(b)}</pre>`;
+    ${bodyPane(o.view)}`;
 }
 
 const inflight = new Set();  // one send per request at a time: a POST must not go out twice
@@ -236,9 +398,12 @@ async function go() {
   $('#res').innerHTML = '<div class="u">sending…</div>';
   inflight.add(k);
   try {
-    last[cur] = await api('POST', '/api/send', { collection: name, key: cur, env: $('#env').value, method: r.method, url: '{{base_url}}' + path + (qs ? '?' + qs : ''), headers, body,
+    const o = await api('POST', '/api/send', { collection: name, key: cur, env: $('#env').value, method: r.method, url: '{{base_url}}' + path + (qs ? '?' + qs : ''), headers, body,
       saved: { path: s.path, query: s.query, headers: s.headers, body: $('#body').value } });
-    show(last[cur]);
+    o.view = newView(o.body, k);
+    if (o.view.base && o.view.filter.trim()) await applyFilter(o.view);
+    last[cur] = o;
+    show(o);
   } catch (e) { showErr(e.message); }
   finally { inflight.delete(k); }
   $('#res').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -482,8 +647,7 @@ async function loadHistory() {
 let histCur = null;
 async function showHistory(id) {
   const e = histCur = await api('GET', `/api/history/${name}/${id}`);
-  let b = e.resp_body;
-  try { b = JSON.stringify(JSON.parse(b), null, 2); } catch {}
+  pane = e.view = newView(e.resp_body, null);
   const hdrs = l => esc(l.map(([k, v]) => k + ': ' + v).join('\n')) || '(none)';
   $('#ed').innerHTML = `
     <div class="bar"><b class="m ${e.method}" style="width:auto;align-self:center">${e.method}</b><code style="flex:1;align-self:center">${esc(e.url)}</code>
@@ -492,7 +656,7 @@ async function showHistory(id) {
     <h4>Request headers</h4><pre>${hdrs(Object.entries(e.req_headers))}</pre>
     ${e.req_body ? `<h4>Request body</h4><pre>${esc(e.req_body)}</pre>` : ''}
     <div class="res"><div class="stl ${sc(e.status)}">${e.status} ${esc(e.reason)} · ${e.ms} ms · ${e.size} B${e.truncated ? ' · body truncated' : ''}</div>
-      <details><summary>Headers (${e.resp_headers.length})</summary><pre>${hdrs(e.resp_headers)}</pre></details><pre>${esc(b)}</pre></div>`;
+      <details><summary>Headers (${e.resp_headers.length})</summary><pre>${hdrs(e.resp_headers)}</pre></details>${bodyPane(e.view)}</div>`;
 }
 
 $('#t-req').addEventListener('click', () => setTab('req'));

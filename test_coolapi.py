@@ -1,11 +1,15 @@
 #!/usr/bin/env -S uv run
 # /// script
-# dependencies = ["pyyaml"]
+# dependencies = ["jq", "pyyaml"]
 # ///
 import base64
 import json
+import re
+import shutil
+import subprocess
 import tempfile
 import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -121,6 +125,26 @@ def test_security_and_yaml():
         "tok": "",
     }
     assert parse_spec("openapi: 3.0.0\npaths: {}")["openapi"] == "3.0.0"
+
+
+def test_yaml_unquoted_dates_stay_strings():
+    spec = parse_spec("""
+openapi: 3.0.0
+paths:
+  /a:
+    patch:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                day: {type: string, format: date, example: 2000-01-23}
+                at: {type: string, format: date-time, example: 2021-01-01T00:00:00.000+0000}
+""")
+    assert json.loads(spec_ops(spec)["PATCH /a"]["body_default"]) == {
+        "day": "2000-01-23",
+        "at": "2021-01-01T00:00:00.000+0000",
+    }
 
 
 def test_security_oauth2_cc_seeds_auth():
@@ -242,6 +266,84 @@ def test_history_redacts_and_caps():
     add_history("c", {**e, "id": "2"})
     assert [x["id"] for x in read_history("c")] == [e["id"], "2"]
     assert read_history("nope") == []
+
+
+def test_jq_outputs():
+    doc = '{"items":[{"a":1},{"a":2}],"s":"é\u2028<b>"}'
+    jq = lambda f, text=doc: coolapi.run_jq({"filter": f, "text": text})
+    assert jq(".items | length") == {"out": ["2"], "error": None}
+    assert jq(".items[]") == {"out": ['{"a":1}', '{"a":2}'], "error": None}  # one line per output
+    assert jq("empty") == {"out": [], "error": None}
+    assert jq("-1") == {"out": ["-1"], "error": None}  # not read as a command line option
+    assert json.loads(jq(".s")["out"][0]) == "é\u2028<b>"  # U+2028 must not split the line
+    assert [json.loads(x) for x in jq("nan, infinite")["out"]] == [None, 1.7976931348623157e308]
+
+
+def test_jq_errors():
+    jq = lambda f, text='{"items":[1],"s":"x"}': coolapi.run_jq({"filter": f, "text": text})
+    assert "syntax error" in jq(".items[")["error"]
+    assert jq(".s.y")["error"] == 'Cannot index string with string ("y")'
+    partial = jq('.items[], error("boom")')  # outputs before the error are kept
+    assert partial == {"out": ["1"], "error": "boom"}
+    assert "parse error" in jq(".", "not json")["error"]
+    assert "PATH" not in json.loads(jq("$ENV | keys")["out"][0])  # server env is not readable
+    big = jq('repeat("x" * 1000000)')  # stopped at the cap, partial output dropped
+    assert big == {"out": [], "error": "filter output is over 10 MB"}
+
+
+def test_jq_timeout_kills_endless_filter():
+    t = time.time()
+    r = coolapi.run_jq({"filter": "def f: f; f", "text": "1"}, timeout=0.5)
+    assert r == {"out": [], "error": "filter timed out after 0.5 s"}
+    assert time.time() - t < 3
+
+
+SIDEBAR_FUZZY_CHECKS = r"""
+const assert = require('node:assert');
+const req = (method, path, summary) => ({ method, path, summary });
+const score = (q, t) => fuzzy(q, t).score;
+
+assert.deepEqual(fuzzy('usrid', '/users/{id}').pos, [1, 2, 4, 8, 9]);
+assert.equal(fuzzy('uesrs', '/users/{id}'), null);
+assert.equal(fuzzy('x', ''), null);
+assert.deepEqual(fuzzy('USERS', '/users').pos, fuzzy('users', '/USERS').pos);
+
+assert(score('pet', 'a/pet') > score('pet', 'a/p-e-t'));  // exact beats scattered
+assert(score('pet', '/pet/x') > score('pet', '/carpet/x'));  // word start beats mid-word
+assert(score('id', 'getId') > score('id', 'grid'));  // camelCase hump is a word start
+assert.deepEqual(fuzzy('pet', 'p e /pet').pos, [5, 6, 7]);  // a later start can be better
+
+const m = matchReq(['get', 'pets'], 'listPets', req('GET', '/pets'));
+assert.deepEqual(m.marks.method, [0, 1, 2]);
+assert.deepEqual(m.marks.path, [1, 2, 3, 4]);
+assert.equal(matchReq(['get', 'nope'], 'listPets', req('GET', '/pets')), null);  // all tokens must match
+assert.equal(matchReq(['undefined'], 'k', req('GET', '/pets')), null);  // missing summary is not text
+assert.deepEqual(matchReq(['listp'], 'listPets', req('GET', '/x', 'Other')).marks.key, [0, 1, 2, 3, 4]);
+assert.deepEqual(matchReq([], 'k', req('GET', '/x')), { score: 0, marks: { path: [], summary: [], method: [], key: [] } });
+assert.deepEqual(matchReq(['pe', 'ts'], 'k', req('GET', '/pets')).marks.path, [1, 2, 3, 4]);  // tokens share a field
+
+assert.equal(hl('/a<b&c', []), '/a&lt;b&amp;c');
+assert.equal(hl('/a<b&c', [2, 4]), '/a<mark>&lt;</mark>b<mark>&amp;</mark>c');
+assert.equal(hl('abcd', [1, 2]), 'a<mark>bc</mark>d');  // one mark per run
+assert.equal(hl('abcd', [2, 1, 2]), 'a<mark>bc</mark>d');  // order and repeats don't matter
+assert.equal(hl('abc'), 'abc');
+assert.equal(hl(undefined), '');
+
+assert.deepEqual(fuzzy('x', 'İx').pos, [1]);  // positions stay aligned when lowercasing changes length
+assert.equal(hl('İx', fuzzy('x', 'İx').pos), 'İ<mark>x</mark>');
+"""
+
+
+def test_sidebar_fuzzy():
+    node = shutil.which("node")
+    if not node:
+        print("skip test_sidebar_fuzzy: node is not installed")
+        return
+    html = (Path(__file__).parent / "index.html").read_text(encoding="utf-8")
+    esc = re.search(r"^const esc = .*$", html, re.M).group()
+    block = re.search(r"// fuzzy:start\n.*// fuzzy:end", html, re.S).group()
+    p = subprocess.run([node, "-e", f"{esc}\n{block}\n{SIDEBAR_FUZZY_CHECKS}"], capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr
 
 
 if __name__ == "__main__":

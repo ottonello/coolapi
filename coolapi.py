@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run
 # /// script
-# dependencies = ["pyyaml"]
+# dependencies = ["jq", "pyyaml"]
 # ///
 """coolapi: local API client. Import OpenAPI/Swagger, keep saved values and creds on re-import."""
 import base64
@@ -8,6 +8,7 @@ import json
 import os
 import re
 import ssl
+import subprocess
 import sys
 import threading
 import time
@@ -31,11 +32,21 @@ VAR = re.compile(r"\{\{\s*([\w.-]+)\s*\}\}")
 # --- spec parsing ---
 
 
+class SpecLoader(yaml.SafeLoader):
+    """SafeLoader that keeps unquoted dates as strings, as in a JSON spec."""
+
+
+SpecLoader.yaml_implicit_resolvers = {
+    k: [(tag, rx) for tag, rx in v if tag != "tag:yaml.org,2002:timestamp"]
+    for k, v in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+
+
 def parse_spec(text):
     try:
         spec = json.loads(text)
     except ValueError:
-        spec = yaml.safe_load(text)
+        spec = yaml.load(text, Loader=SpecLoader)
     if not isinstance(spec, dict) or not ("openapi" in spec or "swagger" in spec):
         raise ValueError("not an OpenAPI/Swagger spec")
     return spec
@@ -520,6 +531,46 @@ def read_history(name):
     return [json.loads(line) for line in path.read_text().splitlines() if line]
 
 
+# --- jq filter ---
+
+JQ_TIMEOUT = 5  # seconds
+JQ_MAX_OUTPUT = 10_000_000  # characters: repeat(.) must not fill the server's memory or freeze the tab
+JQ_TOO_LARGE = 2  # helper exit code: the output so far is dropped
+# Runs apart from the server so a filter that never ends can be killed.
+# One JSON value per line: ensure_ascii keeps strings free of line separators.
+JQ_HELPER = f"""
+import json, sys
+import jq
+size = 0
+try:
+    for v in jq.compile(sys.argv[1]).input_text(sys.stdin.read()):
+        line = json.dumps(v, separators=(",", ":"))
+        size += len(line)
+        if size > {JQ_MAX_OUTPUT}:
+            print("filter output is over {JQ_MAX_OUTPUT // 1_000_000} MB", file=sys.stderr)
+            sys.exit({JQ_TOO_LARGE})
+        print(line)
+except Exception as e:
+    sys.stdout.flush()
+    print(e, file=sys.stderr)
+    sys.exit(1)
+"""
+
+
+def run_jq(p, timeout=JQ_TIMEOUT):
+    # -I: a jq.py in the working directory can't shadow the package
+    cmd = [sys.executable, "-I", "-X", "utf8", "-c", JQ_HELPER, p["filter"]]
+    # no inherited env: $ENV in a filter must not read the server's secrets (Windows needs SYSTEMROOT)
+    env = {k: v for k, v in os.environ.items() if k == "SYSTEMROOT"}
+    try:
+        r = subprocess.run(cmd, input=p["text"], capture_output=True, encoding="utf-8",
+                           errors="replace", timeout=timeout, env=env)
+    except subprocess.TimeoutExpired:
+        return {"out": [], "error": f"filter timed out after {timeout} s"}
+    error = (r.stderr.strip() or f"jq exited with code {r.returncode}") if r.returncode else None
+    return {"out": [] if r.returncode == JQ_TOO_LARGE else r.stdout.splitlines(), "error": error}
+
+
 # --- server ---
 
 
@@ -557,6 +608,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, do_import(body))
             if self.command == "POST" and path == "/api/collections":
                 return self.reply(200, do_create(body))
+            if self.command == "POST" and path == "/api/jq":
+                return self.reply(200, run_jq(body))
             if self.command == "POST" and path == "/api/send":
                 out = send(body)
                 try:
